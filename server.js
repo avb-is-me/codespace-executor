@@ -15,6 +15,10 @@ const localLLM = new LocalLLM();
 const JobManager = require('./src/jobs/JobManager');
 let jobManager = null;
 
+// Secure execution system
+const SecureExecutor = require('./src/secure/SecureExecutor');
+let secureExecutor = null;
+
 function getJobManager() {
     if (!jobManager) {
         jobManager = new JobManager({
@@ -24,6 +28,15 @@ function getJobManager() {
         });
     }
     return jobManager;
+}
+
+function getSecureExecutor() {
+    if (!secureExecutor) {
+        secureExecutor = new SecureExecutor({
+            timeout: 30000
+        });
+    }
+    return secureExecutor;
 }
 
 // Legacy Ollama integration (keeping for backward compatibility)
@@ -406,7 +419,7 @@ const server = http.createServer((req, res) => {
         req.on('end', async() => {
             try {
                 const payload = JSON.parse(body);
-
+                console.log("this is the payload", payload)
                 // Handle encryption if encrypt_messages is true
                 if (payload.encrypt_messages) {
                     try {
@@ -448,7 +461,7 @@ const server = http.createServer((req, res) => {
                 //     return res.end(JSON.stringify({ error: 'Resources are not valid, make sure you have the correct environment variables and doc resources before trying to execute' }));
                 // }
 
-                if (payload.code) {
+                if (payload.code || payload.Global_code) {
                     // Check if background execution is requested
                     if (payload.background) {
                         // Submit as background job
@@ -499,9 +512,9 @@ const server = http.createServer((req, res) => {
                             }));
                         }
                     } else {
-                        // Enhanced code execution with async support (immediate execution)
+                        // Enhanced code execution with secure or full mode based on feature flag
                         console.log(payload)
-                        executeCodeWithAsyncSupport(payload, res, headerEnvVars);
+                        executeCodeWithSecureMode(payload, res, headerEnvVars);
                     }
                 } else if (payload.command) {
                     // Handle command execution
@@ -867,7 +880,62 @@ const server = http.createServer((req, res) => {
     }
 });
 
-// Enhanced code execution function with better async support
+// New secure execution function with feature flag support
+async function executeCodeWithSecureMode(payload, res, headerEnvVars = {}) {
+    try {
+        const executor = getSecureExecutor();
+        const result = await executor.executeCode(payload, headerEnvVars);
+
+        // Handle encryption if requested
+        let finalResult = result;
+        if (payload.encrypt_messages) {
+            try {
+                const responseString = JSON.stringify(result);
+                const encryptedResponse = encrypt(responseString);
+                finalResult = {
+                    encrypted: true,
+                    data: encryptedResponse
+                };
+            } catch (encryptError) {
+                console.error('❌ Failed to encrypt response:', encryptError.message);
+                finalResult.encryptionError = 'Failed to encrypt response: ' + encryptError.message;
+            }
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(finalResult));
+
+    } catch (error) {
+        console.error('❌ Secure execution error:', error);
+
+        let errorResult = {
+            success: false,
+            error: error.error || 'Execution failed',
+            details: error.details || error.message,
+            executionMode: error.executionMode || 'unknown'
+        };
+
+        // Handle encryption for error response
+        if (payload.encrypt_messages) {
+            try {
+                const errorString = JSON.stringify(errorResult);
+                const encryptedError = encrypt(errorString);
+                errorResult = {
+                    encrypted: true,
+                    data: encryptedError
+                };
+            } catch (encryptError) {
+                console.error('❌ Failed to encrypt error response:', encryptError.message);
+                errorResult.encryptionError = 'Failed to encrypt error response: ' + encryptError.message;
+            }
+        }
+
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(errorResult));
+    }
+}
+
+// Enhanced code execution function with better async support (LEGACY - kept for reference)
 async function executeCodeWithAsyncSupport(payload, res, headerEnvVars = {}) {
     const tempFile = `temp_${Date.now()}.js`;
     let codeToExecute = payload.code;
