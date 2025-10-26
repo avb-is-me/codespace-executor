@@ -62,11 +62,14 @@ export class WebSocketServer {
   private wsConnectionKey: string | null = null
   private readonly STORAGE_DIR = path.join(os.homedir(), '.keyboard-mcp')
   private readonly WS_KEY_FILE = path.join(os.homedir(), '.keyboard-mcp', '.keyboard-mcp-ws-key')
-  
+
   // Message storage
   private messages: Message[] = []
   private pendingCount: number = 0
-  
+
+  // Request tracking for proper response routing
+  private pendingRequests: Map<string, WebSocket> = new Map()
+
   // Settings for automatic approvals
   private automaticCodeApproval: 'never' | 'low' | 'medium' | 'high' = 'never'
   private readonly CODE_APPROVAL_ORDER = ['never', 'low', 'medium', 'high'] as const
@@ -211,32 +214,41 @@ export class WebSocketServer {
 
           // Handle token request
           if (message.type === 'request-token') {
-            // This would need to be implemented based on your auth system
-            const tokenResponse = {
-              type: 'auth-token',
-              token: null, // Implement token retrieval
-              timestamp: Date.now(),
-              requestId: message.requestId,
-              authenticated: false,
-              user: null,
+            const { requestId } = message
+
+            // Track which client sent this request
+            if (requestId) {
+              this.pendingRequests.set(requestId, ws)
             }
-            ws.send(JSON.stringify(tokenResponse))
+
+            // Forward to MenuBarApp or other clients
+            this.broadcastToOthers({
+              ...message,
+              timestamp: Date.now(),
+            }, ws)
             return
           }
 
           // Handle provider token request
           if (message.type === 'request-provider-token') {
-            const { providerId } = message
+            const { providerId, requestId } = message
 
             if (!providerId) {
               ws.send(JSON.stringify({
                 type: 'provider-auth-token',
                 error: 'Provider ID is required',
                 timestamp: Date.now(),
-                requestId: message.requestId,
+                requestId: requestId,
               }))
               return
             }
+
+            // Track which client sent this request
+            if (requestId) {
+              this.pendingRequests.set(requestId, ws)
+            }
+
+            // Forward to MenuBarApp or other clients
             this.broadcastToOthers({
                 ...message,
                 timestamp: Date.now(),
@@ -244,16 +256,35 @@ export class WebSocketServer {
             return
           }
           if (message.type === 'provider-auth-token') {
-              this.broadcastToOthers({
-                ...message,
-                timestamp: Date.now(),
-            }, ws)
+            const { requestId } = message
+
+            // Find the original requester
+            const originalClient = this.pendingRequests.get(requestId)
+
+            if (originalClient && originalClient.readyState === WebSocket.OPEN) {
+              // Send response back to ORIGINAL client
+              originalClient.send(JSON.stringify(message))
+
+              // Clean up
+              this.pendingRequests.delete(requestId)
+            } else {
+              // Fallback: broadcast if we can't find original client
+              console.warn(`⚠️ No pending request found for requestId: ${requestId}`)
+              this.broadcastToOthers(message, ws)
+            }
             return
           }
 
           // Handle provider status request
           if (message.type === 'request-provider-status') {
-            // This would need to be implemented based on your provider system
+            const { requestId } = message
+
+            // Track which client sent this request
+            if (requestId) {
+              this.pendingRequests.set(requestId, ws)
+            }
+
+            // Forward to MenuBarApp or other clients
             this.broadcastToOthers({
                 ...message,
                 timestamp: Date.now(),
@@ -300,13 +331,43 @@ export class WebSocketServer {
 
           // Handle auth token response from MenuBarApp
           if (message.type === 'auth-token') {
-            this.broadcastToOthers(message, ws)
+            const { requestId } = message
+
+            // Find the original requester
+            const originalClient = this.pendingRequests.get(requestId)
+
+            if (originalClient && originalClient.readyState === WebSocket.OPEN) {
+              // Send response back to ORIGINAL client
+              originalClient.send(JSON.stringify(message))
+
+              // Clean up
+              this.pendingRequests.delete(requestId)
+            } else {
+              // Fallback: broadcast if we can't find original client
+              console.warn(`⚠️ No pending request found for requestId: ${requestId}`)
+              this.broadcastToOthers(message, ws)
+            }
             return
           }
 
           // Handle user tokens available response
           if (message.type === 'user-tokens-available') {
-            this.broadcastToOthers(message, ws)
+            const { requestId } = message
+
+            // Find the original requester
+            const originalClient = this.pendingRequests.get(requestId)
+
+            if (originalClient && originalClient.readyState === WebSocket.OPEN) {
+              // Send response back to ORIGINAL client
+              originalClient.send(JSON.stringify(message))
+
+              // Clean up
+              this.pendingRequests.delete(requestId)
+            } else {
+              // Fallback: broadcast if we can't find original client
+              console.warn(`⚠️ No pending request found for requestId: ${requestId}`)
+              this.broadcastToOthers(message, ws)
+            }
             return
           }
 
@@ -388,6 +449,13 @@ export class WebSocketServer {
 
       ws.on('close', () => {
         console.log('👋 WebSocket client disconnected')
+
+        // Clean up any pending requests from this client
+        for (const [requestId, client] of this.pendingRequests.entries()) {
+          if (client === ws) {
+            this.pendingRequests.delete(requestId)
+          }
+        }
       })
 
       ws.on('error', (error) => {
