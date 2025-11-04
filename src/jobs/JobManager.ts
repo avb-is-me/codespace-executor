@@ -74,6 +74,7 @@ export default class JobManager {
     }
 
     createJob(payload: ExecutionPayload, options: JobOptions = {}): string {
+        
         const jobId = this.generateJobId();
         const job: Job = {
             id: jobId,
@@ -202,20 +203,39 @@ export default class JobManager {
         // Find next pending job
         const pendingJob = Array.from(this.jobs.values())
             .find(job => job.status === 'PENDING');
-        
+
         if (!pendingJob) {
             return false;
         }
 
-        this.startJobExecution(pendingJob);
+        // Immediately mark as RUNNING to prevent race condition where
+        // the same job could be started multiple times if processNextJob()
+        // is called again before startJobExecution updates the status
+        this.updateJobStatus(pendingJob.id, 'RUNNING');
+
+        // Start execution with error handling for the fire-and-forget pattern
+        this.startJobExecution(pendingJob).catch(error => {
+            // Handle unexpected errors that occur before the try-catch in startJobExecution
+            console.error('❌ Unhandled error starting job execution:', error);
+            const jobError: JobError = {
+                message: error.message || 'Failed to start job execution',
+                type: 'STARTUP_ERROR',
+                details: error.stack
+            };
+            this.updateJobStatus(pendingJob.id, 'FAILED', { error: jobError });
+            // Try to process next job after failure
+            this.processNextJob();
+        });
+
         return true;
     }
 
     private async startJobExecution(job: Job): Promise<void> {
         try {
-            this.updateJobStatus(job.id, 'RUNNING');
+            // Status is already updated to RUNNING in processNextJob() to prevent race conditions
 
             // Use SecureExecutor for background job execution
+            
             const result = await this.secureExecutor.executeCode(job.payload, job.payload.headerEnvVars || {});
 
             // Handle successful execution

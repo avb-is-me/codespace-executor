@@ -476,6 +476,7 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
         // Extract x-keyboard-provider-user-token-for-* headers
         const headerEnvVars: HeaderEnvVars = {};
         if (req.headers) {
+            
             Object.keys(req.headers).forEach(headerName => {
                 // Check if this is an x-keyboard-provider-user-token-for- header
                 if (headerName.toLowerCase().startsWith('x-keyboard-provider-user-token-for-')) {
@@ -580,8 +581,10 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
 
                 if (payload.code || payload.Global_code) {
                     // Check if background execution is requested
+                    
                     if (payload.background) {
                         // Submit as background job
+
                         try {
                             const jobPayload = {
                                 ...payload,
@@ -642,7 +645,7 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
                         }
                     } else {
                         // Enhanced code execution with secure or full mode based on feature flag
-                        executeCodeWithSecureMode(payload, res, headerEnvVars);
+                        await executeCodeWithSecureMode(payload, res, headerEnvVars);
                     }
                 } else if (payload.command) {
                     // Handle command execution
