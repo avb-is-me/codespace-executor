@@ -1192,10 +1192,12 @@ export default class SecureExecutor {
             if (obj.includes('${process.env.')) {
                 // Escape special characters before wrapping in template literal
                 // This prevents code injection and syntax errors
+                // BUT: preserve ${process.env.KEYBOARD_*} for runtime interpolation
                 const escaped = obj
                     .replace(/\\/g, '\\\\')    // Escape backslashes first
-                    .replace(/`/g, '\\`')       // Escape backticks
-                    .replace(/\$/g, '\\$');     // Escape dollar signs (prevents ${} interpolation)
+                    .replace(/`/g, '\\`');      // Escape backticks
+                    // Note: We do NOT escape dollar signs in ${process.env.KEYBOARD_*} patterns
+                    // as these need to be evaluated at runtime in the isolated environment
 
                 return '`' + escaped + '`';
             }
