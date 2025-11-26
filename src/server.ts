@@ -108,8 +108,18 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
     const parsedUrl = url.parse(req.url || '', true);
     const pathname = parsedUrl.pathname;
 
+    // Health check endpoint (required by orchestrator)
+    if (pathname === '/health' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+            status: 'healthy', 
+            timestamp: new Date().toISOString(),
+            service: 'codespace-executor',
+            version: '1.0.0'
+        }));
+    }
     // Serve index.html at root
-    if (pathname === '/' && req.method === 'GET') {
+    else if (pathname === '/' && req.method === 'GET') {
         const indexPath = path.join(__dirname, '../../index.html');
         fs.readFile(indexPath, (err, data) => {
             if (err) {
