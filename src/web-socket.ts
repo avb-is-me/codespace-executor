@@ -64,7 +64,7 @@ interface QueuedMessage {
 
 export class WebSocketServer {
   private wsServer: WebSocket.Server | null = null
-  private readonly WS_PORT = parseInt(process.env.WS_PORT || '3001')
+  private readonly WS_PORT = parseInt(process.env.WS_PORT || '4002')
   // WebSocket security
   private wsConnectionKey: string | null = null
   private readonly STORAGE_DIR = path.join(os.homedir(), '.keyboard-mcp')
