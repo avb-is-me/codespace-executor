@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import * as WebSocket from 'ws'
+import { verifyBearerTokenWithOwnership } from './utils/auth.js'
 
 // Types for WebSocket server configuration
 interface WebSocketVerifyInfo {
@@ -186,13 +187,13 @@ export class WebSocketServer {
           //   return false
           // }
 
-          // Check for GitHub token authentication in headers
+          // Check for authentication with ownership validation
           const authHeader = info.req.headers?.['authorization']
           const githubTokenHeader = info.req.headers?.['x-github-token']
           
           // Accept connection if either:
-          // 1. Has Authorization header with Bearer token
-          // 2. Has X-GitHub-Token header
+          // 1. Has Authorization header with Bearer token AND user owns sandbox
+          // 2. Has X-GitHub-Token header (legacy support)
           // 3. Has key in query params (legacy support)
           const url = new URL(info.req.url!, `ws://127.0.0.1:${this.WS_PORT}`)
           const providedKey = url.searchParams.get('key')
@@ -200,15 +201,28 @@ export class WebSocketServer {
           const authHeaderStr = Array.isArray(authHeader) ? authHeader[0] : authHeader
           const githubTokenStr = Array.isArray(githubTokenHeader) ? githubTokenHeader[0] : githubTokenHeader
           
-          const hasGitHubAuth = (authHeaderStr && authHeaderStr.startsWith('Bearer ')) || githubTokenStr
+          // Check ownership validation for Bearer tokens
+          let hasValidOwnership = false
+          if (authHeaderStr && authHeaderStr.startsWith('Bearer ')) {
+            try {
+              hasValidOwnership = await verifyBearerTokenWithOwnership(authHeaderStr)
+              console.log(`🔐 WebSocket auth check: ${hasValidOwnership ? 'PASSED' : 'FAILED'} for bearer token`)
+            } catch (error) {
+              console.error('❌ WebSocket ownership validation error:', error)
+              hasValidOwnership = false
+            }
+          }
+          
+          // Legacy auth methods (maintain backward compatibility)
+          const hasLegacyGitHubAuth = githubTokenStr
           const hasKeyAuth = providedKey && this.validateWebSocketKey(providedKey)
           
-          if (!hasGitHubAuth && !hasKeyAuth) {
-            
+          if (!hasValidOwnership && !hasLegacyGitHubAuth && !hasKeyAuth) {
+            console.error('❌ WebSocket connection denied: No valid authentication')
             return false
           }
 
-          if (hasGitHubAuth) {
+          if (hasValidOwnership || hasLegacyGitHubAuth) {
             
           }
 

@@ -1,4 +1,5 @@
 import { jwtVerify, createRemoteJWKSet } from 'jose';
+import { validateSandboxOwnership } from './ownership-validator.js';
 
 const ISSUER_URL = "https://login.keyboard.dev"
 const JWKS = createRemoteJWKSet(new URL(`${ISSUER_URL}/oauth2/jwks`));
@@ -89,6 +90,45 @@ export async function verifyBearerTokenDetailed(token: string): Promise<Verifica
     return {
       isValid: false,
       error: errorMessage
+    };
+  }
+}
+
+/**
+ * Verify bearer token AND validate sandbox ownership
+ * This is the primary auth function that should be used for securing sandbox endpoints
+ * @param authHeader - The Authorization header value
+ * @returns Promise<boolean> - true if token is valid AND user owns the sandbox
+ */
+export async function verifyBearerTokenWithOwnership(authHeader: string | undefined): Promise<boolean> {
+  try {
+    const result = await validateSandboxOwnership(authHeader);
+    return result.isValid;
+  } catch (error) {
+    console.error('❌ Auth with ownership validation failed:', error);
+    return false;
+  }
+}
+
+/**
+ * Verify bearer token AND validate sandbox ownership with detailed result
+ * @param authHeader - The Authorization header value
+ * @returns Promise<VerificationResult> - detailed result with ownership validation
+ */
+export async function verifyBearerTokenWithOwnershipDetailed(authHeader: string | undefined): Promise<VerificationResult & { userId?: string; orgId?: string }> {
+  try {
+    const result = await validateSandboxOwnership(authHeader);
+    return {
+      isValid: result.isValid,
+      error: result.error,
+      userId: result.userId,
+      orgId: result.orgId
+    };
+  } catch (error: any) {
+    console.error('❌ Auth with ownership validation failed:', error);
+    return {
+      isValid: false,
+      error: error.message || 'Authentication failed'
     };
   }
 }

@@ -12,7 +12,7 @@ import {
 } from './retrieve_resources/index.js';
 import { encrypt, decrypt, safeObfuscate } from './utils/crypto.js';
 import { getKeyMetadata, decryptWithPrivateKey, encryptWithPublicKey, isKeyPairInitialized, tryDecrypt } from './utils/asymmetric-crypto.js';
-import { verifyBearerToken, extractBearerToken } from './utils/auth.js';
+import { extractBearerToken, verifyBearerTokenWithOwnership } from './utils/auth.js';
 import LocalLLM from './local_llm/local.js';
 import JobManager from './jobs/JobManager.js';
 import SecureExecutor from './secure/SecureExecutor.js';
@@ -437,13 +437,13 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
                     return;
                 }
 
-                // Verify token against keyboard.dev auth service
-                const isValid = await verifyBearerToken(token);
+                // Verify token and validate sandbox ownership
+                const isValid = await verifyBearerTokenWithOwnership(req.headers['authorization']);
                 if (!isValid) {
                     res.writeHead(401, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({
                         error: 'Unauthorized',
-                        message: 'Invalid or expired bearer token'
+                        message: 'Invalid token or you do not own this sandbox'
                     }));
                     return;
                 }
@@ -512,6 +512,19 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
 
         req.on('end', async (): Promise<void> => {
             try {
+                // Validate user ownership before allowing code execution
+                const authHeader = req.headers['authorization'];
+                const isValidOwnership = await verifyBearerTokenWithOwnership(authHeader);
+                
+                if (!isValidOwnership) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({
+                        error: 'Unauthorized',
+                        message: 'Invalid token or you do not own this sandbox'
+                    }));
+                    return;
+                }
+
                 const payload: ExecutionPayload = JSON.parse(body);
 
                 // Handle encryption (both asymmetric and symmetric)
