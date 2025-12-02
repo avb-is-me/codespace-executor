@@ -2,6 +2,7 @@
   "name": "simple-node-server",
   "version": "1.0.0",
   "description": "A typescript server that allows keyboard to execute code'.",
+  "type": "module",
   "main": "src/server.ts",
   "scripts": {
     "start": "npm install && npm run build && node dist/src/server.js",

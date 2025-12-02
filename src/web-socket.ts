@@ -2,8 +2,12 @@ import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import * as WebSocket from 'ws'
-import { verifyBearerTokenWithOwnership } from './utils/auth.js'
+import { fileURLToPath } from 'url'
+import WebSocket, { WebSocketServer as WSServer } from 'ws'
+
+// ES Module equivalent of __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Types for WebSocket server configuration
 interface WebSocketVerifyInfo {
@@ -64,7 +68,7 @@ interface QueuedMessage {
 }
 
 export class WebSocketServer {
-  private wsServer: WebSocket.Server | null = null
+  private wsServer: WSServer | null = null
   private readonly WS_PORT = parseInt(process.env.WS_PORT || '4002')
   // WebSocket security
   private wsConnectionKey: string | null = null
@@ -171,7 +175,7 @@ export class WebSocketServer {
 
   private setupWebSocketServer(): void {
     try {
-      this.wsServer = new WebSocket.Server({
+      this.wsServer = new WSServer({
         port: this.WS_PORT,
         host: '0.0.0.0', // Allow connections from pod network in Kubernetes
       verifyClient: (info: WebSocketVerifyInfo) => {
@@ -187,13 +191,13 @@ export class WebSocketServer {
           //   return false
           // }
 
-          // Check for authentication with ownership validation
+          // Check for GitHub token authentication in headers
           const authHeader = info.req.headers?.['authorization']
           const githubTokenHeader = info.req.headers?.['x-github-token']
           
           // Accept connection if either:
-          // 1. Has Authorization header with Bearer token AND user owns sandbox
-          // 2. Has X-GitHub-Token header (legacy support)
+          // 1. Has Authorization header with Bearer token
+          // 2. Has X-GitHub-Token header
           // 3. Has key in query params (legacy support)
           const url = new URL(info.req.url!, `ws://127.0.0.1:${this.WS_PORT}`)
           const providedKey = url.searchParams.get('key')
@@ -201,28 +205,15 @@ export class WebSocketServer {
           const authHeaderStr = Array.isArray(authHeader) ? authHeader[0] : authHeader
           const githubTokenStr = Array.isArray(githubTokenHeader) ? githubTokenHeader[0] : githubTokenHeader
           
-          // Check ownership validation for Bearer tokens
-          let hasValidOwnership = false
-          if (authHeaderStr && authHeaderStr.startsWith('Bearer ')) {
-            try {
-              hasValidOwnership = await verifyBearerTokenWithOwnership(authHeaderStr)
-              console.log(`🔐 WebSocket auth check: ${hasValidOwnership ? 'PASSED' : 'FAILED'} for bearer token`)
-            } catch (error) {
-              console.error('❌ WebSocket ownership validation error:', error)
-              hasValidOwnership = false
-            }
-          }
-          
-          // Legacy auth methods (maintain backward compatibility)
-          const hasLegacyGitHubAuth = githubTokenStr
+          const hasGitHubAuth = (authHeaderStr && authHeaderStr.startsWith('Bearer ')) || githubTokenStr
           const hasKeyAuth = providedKey && this.validateWebSocketKey(providedKey)
           
-          if (!hasValidOwnership && !hasLegacyGitHubAuth && !hasKeyAuth) {
-            console.error('❌ WebSocket connection denied: No valid authentication')
+          if (!hasGitHubAuth && !hasKeyAuth) {
+            
             return false
           }
 
-          if (hasValidOwnership || hasLegacyGitHubAuth) {
+          if (hasGitHubAuth) {
             
           }
 
@@ -820,4 +811,3 @@ export class WebSocketServer {
     }
   }
 }
-

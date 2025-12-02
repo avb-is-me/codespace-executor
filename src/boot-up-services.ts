@@ -1,6 +1,11 @@
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { generateKeyPair } from './utils/asymmetric-crypto.js';
+
+// ES Module equivalent of __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 interface ServiceConfig {
   name: string;
@@ -192,7 +197,7 @@ export async function bootUpServices(): Promise<ServiceBootstrap> {
 /**
  * If running this file directly (for testing)
  */
-if (require.main === module) {
+if (import.meta.url === `file://${process.argv[1]}`) {
   const bootstrap = new ServiceBootstrap();
 
   bootstrap.bootUpServices().catch((error) => {

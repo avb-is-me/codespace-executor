@@ -1,8 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import { randomBytes } from 'crypto';
-import SecureExecutor from '../secure/SecureExecutor';
-import { Job, JobStatus, JobOptions, JobResult, JobError, ExecutionPayload } from '../types';
+import { fileURLToPath } from 'url';
+import SecureExecutor from '../secure/SecureExecutor.js';
+
+// ES Module equivalent of __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+import { Job, JobStatus, JobOptions, JobResult, JobError, ExecutionPayload } from '../types/index.js';
 
 export interface JobManagerOptions {
     maxConcurrentJobs?: number;

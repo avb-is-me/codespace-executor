@@ -1,5 +1,5 @@
 import { randomBytes, createCipheriv, createDecipheriv } from 'crypto';
-import { obfuscateSensitiveData } from '../obfuscate';
+import { obfuscateSensitiveData } from '../obfuscate/index.js';
 
 const ALGORITHM = 'aes-256-cbc';
 

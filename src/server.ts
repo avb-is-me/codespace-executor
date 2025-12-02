@@ -3,6 +3,11 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import url from 'url';
+import { fileURLToPath } from 'url';
+
+// ES Module equivalent of __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Import converted modules
 import {
@@ -12,7 +17,7 @@ import {
 } from './retrieve_resources/index.js';
 import { encrypt, decrypt, safeObfuscate } from './utils/crypto.js';
 import { getKeyMetadata, decryptWithPrivateKey, encryptWithPublicKey, isKeyPairInitialized, tryDecrypt } from './utils/asymmetric-crypto.js';
-import { extractBearerToken, verifyBearerTokenWithOwnership } from './utils/auth.js';
+import { verifyBearerToken, extractBearerToken, verifyBearerTokenForUser } from './utils/auth.js';
 import LocalLLM from './local_llm/local.js';
 import JobManager from './jobs/JobManager.js';
 import SecureExecutor from './secure/SecureExecutor.js';
@@ -103,7 +108,7 @@ try {
 //     }
 // }
 
-const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse): void => {
+const server = http.createServer(async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     // Parse URL for better routing
     const parsedUrl = url.parse(req.url || '', true);
     const pathname = parsedUrl.pathname;
@@ -437,13 +442,13 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
                     return;
                 }
 
-                // Verify token and validate sandbox ownership
-                const isValid = await verifyBearerTokenWithOwnership(req.headers['authorization']);
+                // Verify token against keyboard.dev auth service
+                const isValid = await verifyBearerToken(token);
                 if (!isValid) {
                     res.writeHead(401, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({
                         error: 'Unauthorized',
-                        message: 'Invalid token or you do not own this sandbox'
+                        message: 'Invalid or expired bearer token'
                     }));
                     return;
                 }
@@ -481,7 +486,9 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
         })();
 
     } else if(req.method === 'POST' && req.url === '/execute') {
+        await verifyBearerTokenForUser(req, res);
         let body = '';
+        
 
         // Extract x-keyboard-provider-user-token-for-* headers
         const headerEnvVars: HeaderEnvVars = {};
@@ -512,19 +519,6 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
 
         req.on('end', async (): Promise<void> => {
             try {
-                // Validate user ownership before allowing code execution
-                const authHeader = req.headers['authorization'];
-                const isValidOwnership = await verifyBearerTokenWithOwnership(authHeader);
-                
-                if (!isValidOwnership) {
-                    res.writeHead(401, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({
-                        error: 'Unauthorized',
-                        message: 'Invalid token or you do not own this sandbox'
-                    }));
-                    return;
-                }
-
                 const payload: ExecutionPayload = JSON.parse(body);
 
                 // Handle encryption (both asymmetric and symmetric)

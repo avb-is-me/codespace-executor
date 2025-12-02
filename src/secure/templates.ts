@@ -1,4 +1,4 @@
-import { ExecutionPayload } from '../types';
+import { ExecutionPayload } from '../types/index.js';
 
 export function awaitedScriptGenerator(payload: ExecutionPayload, asyncTimeout: number): string {
     return `(async () => {

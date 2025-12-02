@@ -1,5 +1,14 @@
 import { jwtVerify, createRemoteJWKSet } from 'jose';
-import { validateSandboxOwnership } from './ownership-validator.js';
+import http from 'http';
+import { webcrypto } from 'node:crypto';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+// Polyfill crypto for jose library
+if (!globalThis.crypto) {
+    globalThis.crypto = webcrypto as any;
+}
 
 const ISSUER_URL = "https://login.keyboard.dev"
 const JWKS = createRemoteJWKSet(new URL(`${ISSUER_URL}/oauth2/jwks`));
@@ -21,8 +30,11 @@ export async function verifyBearerToken(token: string): Promise<boolean> {
   }
 
   try {
+    console.log('what is the jwks', JWKS);
+    console.log("what is the issuer url", ISSUER_URL);
     await jwtVerify(token, JWKS, {
       issuer: ISSUER_URL,
+      subject: process.env.USER_ID,
     });
 
     return true;
@@ -94,41 +106,27 @@ export async function verifyBearerTokenDetailed(token: string): Promise<Verifica
   }
 }
 
-/**
- * Verify bearer token AND validate sandbox ownership
- * This is the primary auth function that should be used for securing sandbox endpoints
- * @param authHeader - The Authorization header value
- * @returns Promise<boolean> - true if token is valid AND user owns the sandbox
- */
-export async function verifyBearerTokenWithOwnership(authHeader: string | undefined): Promise<boolean> {
-  try {
-    const result = await validateSandboxOwnership(authHeader);
-    return result.isValid;
-  } catch (error) {
-    console.error('❌ Auth with ownership validation failed:', error);
-    return false;
-  }
-}
+export async function verifyBearerTokenForUser (req: http.IncomingMessage, res: http.ServerResponse) {
+  const authHeader = req.headers['authorization'];
+  const token = extractBearerToken(authHeader);
 
-/**
- * Verify bearer token AND validate sandbox ownership with detailed result
- * @param authHeader - The Authorization header value
- * @returns Promise<VerificationResult> - detailed result with ownership validation
- */
-export async function verifyBearerTokenWithOwnershipDetailed(authHeader: string | undefined): Promise<VerificationResult & { userId?: string; orgId?: string }> {
-  try {
-    const result = await validateSandboxOwnership(authHeader);
-    return {
-      isValid: result.isValid,
-      error: result.error,
-      userId: result.userId,
-      orgId: result.orgId
-    };
-  } catch (error: any) {
-    console.error('❌ Auth with ownership validation failed:', error);
-    return {
-      isValid: false,
-      error: error.message || 'Authentication failed'
-    };
+  if (!token) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+          error: 'Unauthorized',
+          message: 'Bearer token required. Please provide Authorization header with Bearer token.'
+      }));
+      return;
+  }
+
+  // Verify token against keyboard.dev auth service
+  const isValid = await verifyBearerToken(token);
+  if (!isValid) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+          error: 'Unauthorized',
+          message: 'Invalid or expired bearer token'
+      }));
+      return;
   }
 }

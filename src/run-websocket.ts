@@ -1,4 +1,4 @@
-import { WebSocketServer } from './web-socket'
+import { WebSocketServer } from './web-socket.js'
 
 // Create and start the WebSocket server
 const wsServer = new WebSocketServer()
