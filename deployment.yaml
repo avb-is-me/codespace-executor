@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codespace-executor
+  labels:
+    app: codespace-executor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: codespace-executor
+  template:
+    metadata:
+      labels:
+        app: codespace-executor
+    spec:
+      containers:
+      - name: codespace-executor
+        image: registry.digitalocean.com/orchestrator-registry/codespace-executor:amd64-secure-auth
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3001
+        - containerPort: 4002
+        env:
+        - name: NODE_ENV
+          value: "production"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: codespace-executor-service
+spec:
+  selector:
+    app: codespace-executor
+  ports:
+  - name: http
+    port: 3001
+    targetPort: 3001
+  - name: websocket
+    port: 4002
+    targetPort: 4002
+  type: ClusterIP

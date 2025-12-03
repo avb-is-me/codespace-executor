@@ -4,6 +4,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { fileURLToPath } from 'url'
 import WebSocket, { WebSocketServer as WSServer } from 'ws'
+import { extractBearerToken, verifyBearerToken, verifyBearerTokenSync, initializeJWKSCache, cleanupJWKSCache, isJWKSCacheReady } from './utils/auth.js'
 
 // ES Module equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -71,9 +72,7 @@ export class WebSocketServer {
   private wsServer: WSServer | null = null
   private readonly WS_PORT = parseInt(process.env.WS_PORT || '4002')
   // WebSocket security
-  private wsConnectionKey: string | null = null
-  private readonly STORAGE_DIR = path.join(os.homedir(), '.keyboard-mcp')
-  private readonly WS_KEY_FILE = path.join(os.homedir(), '.keyboard-mcp', '.keyboard-mcp-ws-key')
+  // WebSocket key authentication removed for security - only JWT tokens allowed
   
   // Message storage
   private messages: Message[] = []
@@ -90,6 +89,9 @@ export class WebSocketServer {
   private connectionAliveStatus: Map<WebSocket, boolean> = new Map()
   private pingIntervals: Map<WebSocket, NodeJS.Timeout> = new Map()
 
+  // Connection authentication state tracking
+  private connectionAuthStatus: Map<WebSocket, 'authenticated'> = new Map()
+
   // Settings for automatic approvals
   private automaticCodeApproval: 'never' | 'low' | 'medium' | 'high' = 'never'
   private readonly CODE_APPROVAL_ORDER = ['never', 'low', 'medium', 'high'] as const
@@ -101,77 +103,19 @@ export class WebSocketServer {
   }
 
   private async initializeWebSocket(): Promise<void> {
-    await this.initializeStorageDir()
-    await this.initializeWebSocketKey()
+    // Initialize JWKS cache for synchronous JWT verification
+    try {
+      await initializeJWKSCache();
+      console.log('✅ JWKS cache ready for synchronous verification');
+    } catch (error: any) {
+      console.error('❌ Failed to initialize JWKS cache:', error.message);
+      throw error; // Fail startup if JWKS cache cannot be initialized
+    }
+    
     this.setupWebSocketServer()
   }
 
-  private async initializeStorageDir(): Promise<void> {
-    if (!fs.existsSync(this.STORAGE_DIR)) {
-      fs.mkdirSync(this.STORAGE_DIR, { mode: 0o700 })
-    }
-  }
-
-  private async initializeWebSocketKey(): Promise<void> {
-    try {
-      // Try to load existing key
-      if (fs.existsSync(this.WS_KEY_FILE)) {
-        const keyData = fs.readFileSync(this.WS_KEY_FILE, 'utf8')
-        const parsedData = JSON.parse(keyData)
-
-        // Validate key format and age (regenerate if older than 30 days)
-        if (parsedData.key && parsedData.createdAt) {
-          const keyAge = Date.now() - parsedData.createdAt
-          const maxAge = 30 * 24 * 60 * 60 * 1000 // 30 days
-
-          if (keyAge < maxAge) {
-            this.wsConnectionKey = parsedData.key
-            return
-          }
-        }
-      }
-
-      // Generate new key if none exists or is expired
-      await this.generateNewWebSocketKey()
-    }
-    catch (error) {
-      console.error('❌ Error initializing WebSocket key:', error)
-      // Fallback: generate new key
-      await this.generateNewWebSocketKey()
-    }
-  }
-
-  private async generateNewWebSocketKey(): Promise<void> {
-    try {
-      // Generate a secure random key
-      this.wsConnectionKey = crypto.randomBytes(32).toString('hex')
-
-      // Store key with metadata
-      const keyData = {
-        key: this.wsConnectionKey,
-        createdAt: Date.now(),
-        version: '1.0',
-      }
-
-      // Write to file with restricted permissions
-      fs.writeFileSync(this.WS_KEY_FILE, JSON.stringify(keyData, null, 2), { mode: 0o600 })
-    }
-    catch (error) {
-      console.error('❌ Error generating WebSocket key:', error)
-      throw error
-    }
-  }
-
-  getWebSocketConnectionUrl(): string {
-    if (!this.wsConnectionKey) {
-      throw new Error('WebSocket connection key not initialized')
-    }
-    return `ws://127.0.0.1:${this.WS_PORT}?key=${this.wsConnectionKey}`
-  }
-
-  private validateWebSocketKey(providedKey: string): boolean {
-    return this.wsConnectionKey === providedKey
-  }
+  // WebSocket key authentication methods removed - only JWT authentication allowed
 
   private setupWebSocketServer(): void {
     try {
@@ -180,47 +124,42 @@ export class WebSocketServer {
         host: '0.0.0.0', // Allow connections from pod network in Kubernetes
       verifyClient: (info: WebSocketVerifyInfo) => {
         try {
-          // Validate connection is from localhost
-          // const remoteAddress = info.req.connection.remoteAddress
-          // const isLocalhost = remoteAddress === '127.0.0.1'
-          //   || remoteAddress === '::1'
-          //   || remoteAddress === '::ffff:127.0.0.1'
-
-          // if (!isLocalhost) {
-          //   
-          //   return false
-          // }
-
-          // Check for GitHub token authentication in headers
+          // SECURITY: Fail-closed authentication - only JWT tokens allowed
+          
+          // Extract Bearer token from Authorization header
           const authHeader = info.req.headers?.['authorization']
-          const githubTokenHeader = info.req.headers?.['x-github-token']
-          
-          // Accept connection if either:
-          // 1. Has Authorization header with Bearer token
-          // 2. Has X-GitHub-Token header
-          // 3. Has key in query params (legacy support)
-          const url = new URL(info.req.url!, `ws://127.0.0.1:${this.WS_PORT}`)
-          const providedKey = url.searchParams.get('key')
-          
           const authHeaderStr = Array.isArray(authHeader) ? authHeader[0] : authHeader
-          const githubTokenStr = Array.isArray(githubTokenHeader) ? githubTokenHeader[0] : githubTokenHeader
           
-          const hasGitHubAuth = (authHeaderStr && authHeaderStr.startsWith('Bearer ')) || githubTokenStr
-          const hasKeyAuth = providedKey && this.validateWebSocketKey(providedKey)
+          if (!authHeaderStr || !authHeaderStr.startsWith('Bearer ')) {
+            console.error('❌ WebSocket connection rejected: No Bearer token provided');
+            return false;
+          }
           
-          if (!hasGitHubAuth && !hasKeyAuth) {
-            
-            return false
+          const token = extractBearerToken(authHeaderStr);
+          if (!token) {
+            console.error('❌ WebSocket connection rejected: Invalid Bearer token format');
+            return false;
           }
-
-          if (hasGitHubAuth) {
-            
+          
+          // CRITICAL: Verify JWKS cache is ready - fail if not
+          if (!isJWKSCacheReady()) {
+            console.error('❌ WebSocket connection rejected: JWKS cache not ready, cannot verify tokens');
+            return false;
           }
-
-          return true
+          
+          // Verify JWT token synchronously
+          const isValid = verifyBearerTokenSync(token);
+          if (isValid) {
+            console.log('✅ WebSocket JWT authentication successful');
+            return true;
+          } else {
+            console.error('❌ WebSocket JWT authentication failed - invalid token');
+            return false;
+          }
+          
         }
-        catch (error) {
-          console.error('❌ Error validating WebSocket connection:', error)
+        catch (error: any) {
+          console.error('❌ Error in WebSocket verifyClient:', error.message)
           return false
         }
       },
@@ -229,20 +168,74 @@ export class WebSocketServer {
     this.wsServer.on('error', (error: Error) => {
       console.error('❌ WebSocket server error:', error.message);
       console.warn('⚠️  WebSocket service may not be available');
+      
+      // Implement error isolation to prevent server crashes
+      try {
+        // Log error details for debugging
+        console.error('🔍 WebSocket error details:', {
+          message: error.message,
+          code: (error as any).code,
+          errno: (error as any).errno,
+          syscall: (error as any).syscall
+        });
+        
+        // Check if this is a critical error that requires restart
+        const criticalErrors = ['EADDRINUSE', 'EACCES', 'ENOENT'];
+        const errorCode = (error as any).code;
+        
+        if (criticalErrors.includes(errorCode)) {
+          console.error(`❌ Critical WebSocket error (${errorCode}), attempting restart...`);
+          this.restartWebSocketServer();
+        }
+        
+        // Force cleanup of dead connections on error
+        this.cleanupDeadConnections();
+        
+      } catch (isolationError: any) {
+        console.error('❌ Error in WebSocket error isolation:', isolationError.message);
+        // Don't let isolation errors crash the server
+      }
     });
 
-    this.wsServer.on('connection', (ws: WebSocket) => {
-      console.log('✅ New WebSocket client connected')
+    this.wsServer.on('connection', (ws: WebSocket, req: any) => {
+      console.log('✅ New WebSocket client connected and authenticated')
 
       // Set up ping/pong keep-alive for this connection
       this.setupConnectionKeepalive(ws)
+
+      // Mark connection as authenticated (since verifyClient already validated)
+      this.connectionAuthStatus.set(ws, 'authenticated');
 
       // Deliver any queued messages to the newly connected client
       this.deliverQueuedMessages(ws)
 
       ws.on('message', async (data: WebSocket.Data) => {
         try {
-          const message = JSON.parse(data.toString()) as WebSocketMessage
+          // Check if connection is authenticated before processing messages
+          const authStatus = this.connectionAuthStatus.get(ws);
+          if (authStatus !== 'authenticated') {
+            ws.send(JSON.stringify({
+              type: 'error',
+              error: 'Connection not authenticated',
+              timestamp: Date.now()
+            }));
+            ws.close(1008, 'Authentication required');
+            return;
+          }
+
+          // Add input validation and size limits
+          const dataString = data.toString();
+          if (dataString.length > 1024 * 1024) { // 1MB limit
+            console.warn('⚠️ WebSocket message too large, rejecting');
+            ws.send(JSON.stringify({
+              type: 'error',
+              error: 'Message too large',
+              timestamp: Date.now()
+            }));
+            return;
+          }
+          
+          const message = JSON.parse(dataString) as WebSocketMessage
           
 
           // Handle token request
@@ -412,13 +405,33 @@ export class WebSocketServer {
             requestId: message.requestId,
           }))
         }
-        catch (error) {
+        catch (error: any) {
           console.error('❌ Error parsing WebSocket message:', error)
-          ws.send(JSON.stringify({
-            type: 'error',
-            error: 'Invalid message format',
-            timestamp: Date.now(),
-          }))
+          
+          // Enhanced error handling with isolation
+          try {
+            // Check if connection is still open before sending error
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: 'Invalid message format',
+                timestamp: Date.now(),
+                details: error.message || 'Unknown error'
+              }));
+            }
+            
+            // Log connection state for debugging
+            console.error('🔍 WebSocket connection state:', {
+              readyState: ws.readyState,
+              errorMessage: error.message,
+              errorType: error.constructor.name
+            });
+            
+          } catch (sendError: any) {
+            console.error('❌ Failed to send WebSocket error response:', sendError.message);
+            // Connection might be broken, clean it up
+            this.cleanupConnection(ws);
+          }
         }
       })
 
@@ -427,9 +440,28 @@ export class WebSocketServer {
         this.cleanupConnection(ws)
       })
 
-      ws.on('error', (error) => {
-        console.error('❌ WebSocket error:', error)
-        this.cleanupConnection(ws)
+      ws.on('error', (error: Error) => {
+        console.error('❌ WebSocket connection error:', error)
+        
+        // Enhanced error handling with isolation
+        try {
+          // Log error details for debugging
+          console.error('🔍 WebSocket connection error details:', {
+            message: error.message,
+            code: (error as any).code,
+            errno: (error as any).errno,
+            readyState: ws.readyState
+          });
+          
+          // Always cleanup the connection on error
+          this.cleanupConnection(ws);
+          
+        } catch (cleanupError: any) {
+          console.error('❌ Error during WebSocket cleanup:', cleanupError.message);
+          // Force removal from tracking maps
+          this.connectionAliveStatus.delete(ws);
+          this.pingIntervals.delete(ws);
+        }
       })
     })
   } catch (error: any) {
@@ -479,28 +511,7 @@ export class WebSocketServer {
     }
   }
 
-  // Get WebSocket key info
-  getWebSocketKeyInfo(): { key: string | null, createdAt: number | null, keyFile: string } {
-    let createdAt: number | null = null
-    let key: string | null = null
-    try {
-      if (fs.existsSync(this.WS_KEY_FILE)) {
-        const keyData = fs.readFileSync(this.WS_KEY_FILE, 'utf8')
-        const parsedData = JSON.parse(keyData)
-        createdAt = parsedData.createdAt
-        key = parsedData.key
-      }
-    }
-    catch (error) {
-      console.error('Error reading key file:', error)
-    }
-
-    return {
-      key: key,
-      createdAt,
-      keyFile: this.WS_KEY_FILE,
-    }
-  }
+  // WebSocket key info methods removed - only JWT authentication allowed
 
   // Handle incoming messages
   private handleIncomingMessage(message: any, sender?: WebSocket): void {
@@ -788,8 +799,89 @@ export class WebSocketServer {
       this.pingIntervals.delete(ws)
     }
 
-    // Remove connection status
+    // No authentication timeout cleanup needed for sync auth
+
+    // Remove connection tracking
     this.connectionAliveStatus.delete(ws)
+    this.connectionAuthStatus.delete(ws)
+  }
+
+  // Async authentication method removed - now using synchronous verification in verifyClient
+
+  /**
+   * Restart the WebSocket server after a critical error
+   */
+  private restartWebSocketServer(): void {
+    console.log('🔄 Restarting WebSocket server...');
+    
+    try {
+      // Close existing server
+      if (this.wsServer) {
+        this.wsServer.close();
+      }
+      
+      // Clear all connection tracking
+      this.cleanupAllConnections();
+      
+      // Wait a moment then restart
+      setTimeout(() => {
+        try {
+          this.setupWebSocketServer();
+          console.log('✅ WebSocket server restarted successfully');
+        } catch (restartError: any) {
+          console.error('❌ Failed to restart WebSocket server:', restartError.message);
+        }
+      }, 2000);
+      
+    } catch (error: any) {
+      console.error('❌ Error during WebSocket server restart:', error.message);
+    }
+  }
+
+  /**
+   * Clean up all connections and tracking data
+   */
+  private cleanupAllConnections(): void {
+    try {
+      // Clear all ping intervals
+      this.pingIntervals.forEach((interval) => {
+        clearInterval(interval);
+      });
+      this.pingIntervals.clear();
+
+      // No authentication timeouts to clear with sync auth
+
+      // Clear all tracking maps
+      this.connectionAliveStatus.clear();
+      this.connectionAuthStatus.clear();
+      
+      console.log('🧹 Cleaned up all WebSocket connections');
+    } catch (error: any) {
+      console.error('❌ Error during connection cleanup:', error.message);
+    }
+  }
+
+  /**
+   * Clean up dead/broken connections
+   */
+  private cleanupDeadConnections(): void {
+    try {
+      if (!this.wsServer) return;
+      
+      let deadConnections = 0;
+      this.wsServer.clients.forEach((client) => {
+        if (client.readyState === WebSocket.CLOSED || client.readyState === WebSocket.CLOSING) {
+          this.cleanupConnection(client);
+          deadConnections++;
+        }
+      });
+      
+      if (deadConnections > 0) {
+        console.log(`🧹 Cleaned up ${deadConnections} dead WebSocket connections`);
+      }
+    } catch (error: any) {
+      console.error('❌ Error during dead connection cleanup:', error.message);
+    }
   }
 
   // Clean up resources
@@ -799,12 +891,11 @@ export class WebSocketServer {
       this.cleanupInterval = null
     }
 
-    // Clean up all ping intervals
-    this.pingIntervals.forEach((interval) => {
-      clearInterval(interval)
-    })
-    this.pingIntervals.clear()
-    this.connectionAliveStatus.clear()
+    // Clean up all connections
+    this.cleanupAllConnections();
+
+    // Clean up JWKS cache
+    cleanupJWKSCache();
 
     if (this.wsServer) {
       this.wsServer.close()

@@ -3,18 +3,10 @@ import { WebSocketServer } from './web-socket.js'
 // Create and start the WebSocket server
 const wsServer = new WebSocketServer()
 
-// Log the connection URL with key
+// WebSocket server is now running and ready to accept JWT-authenticated connections
 setTimeout(() => {
-  try {
-    const connectionUrl = wsServer.getWebSocketConnectionUrl()
-    
-    
-    
-    
-    
-  } catch (error) {
-    
-  }
+  console.log('🚀 WebSocket server is ready at ws://localhost:4002/ws')
+  console.log('🔐 Only valid JWT Bearer tokens will be accepted')
 }, 1000)
 
 // Handle graceful shutdown

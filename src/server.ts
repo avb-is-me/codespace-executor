@@ -79,6 +79,91 @@ try {
 }
 
 // 🚀 NEW: Start Ollama setup in background AFTER server is running
+// Enhanced health check function
+async function checkServiceHealth(): Promise<any> {
+    const services = {
+        httpServer: { status: 'healthy', details: 'HTTP server responding' },
+        webSocketServer: { status: 'unknown', details: 'WebSocket status not checked' },
+        ollama: { status: 'unknown', details: 'Ollama service not checked' },
+        jobManager: { status: 'unknown', details: 'Job manager not checked' },
+        secureExecutor: { status: 'unknown', details: 'Secure executor not checked' }
+    };
+
+    let overallStatus = 'healthy';
+
+    try {
+        // Check WebSocket server status
+        if (serviceBootstrap) {
+            const servicesStatus = serviceBootstrap.getServicesStatus();
+            const wsService = servicesStatus.find(s => s.name === 'WebSocket Server');
+            if (wsService) {
+                services.webSocketServer = {
+                    status: wsService.status === 'running' ? 'healthy' : 'unhealthy',
+                    details: `WebSocket server is ${wsService.status}`
+                };
+                if (wsService.status !== 'running') {
+                    overallStatus = 'degraded';
+                }
+            }
+        }
+
+        // Check Ollama service
+        try {
+            if (ollamaClient) {
+                await ollamaClient.list();
+                services.ollama = { status: 'healthy', details: 'Ollama service responding' };
+            } else {
+                services.ollama = { status: 'unavailable', details: 'Ollama client not initialized' };
+            }
+        } catch (error: any) {
+            services.ollama = { status: 'unhealthy', details: `Ollama error: ${error.message}` };
+            overallStatus = 'degraded';
+        }
+
+        // Check job manager
+        try {
+            if (jobManager) {
+                const stats = jobManager.getStats();
+                services.jobManager = { 
+                    status: 'healthy', 
+                    details: `Job manager active, ${stats.total} total jobs` 
+                };
+            }
+        } catch (error: any) {
+            services.jobManager = { status: 'unhealthy', details: `Job manager error: ${error.message}` };
+            overallStatus = 'degraded';
+        }
+
+        // Check secure executor
+        try {
+            if (secureExecutor) {
+                services.secureExecutor = { status: 'healthy', details: 'Secure executor initialized' };
+            }
+        } catch (error: any) {
+            services.secureExecutor = { status: 'unhealthy', details: `Secure executor error: ${error.message}` };
+            overallStatus = 'degraded';
+        }
+
+    } catch (error: any) {
+        console.error('❌ Error during health check:', error.message);
+        overallStatus = 'unhealthy';
+    }
+
+    return {
+        status: overallStatus,
+        timestamp: new Date().toISOString(),
+        service: 'codespace-executor',
+        version: '1.0.0',
+        uptime: process.uptime(),
+        memory: {
+            used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+            total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+            external: Math.round(process.memoryUsage().external / 1024 / 1024)
+        },
+        services
+    };
+}
+
 // function startOllamaSetupInBackground(): void {
 //     try {
 //         const setupProcess = spawn('node', ['setup-ollama.js'], {
@@ -113,15 +198,26 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     const parsedUrl = url.parse(req.url || '', true);
     const pathname = parsedUrl.pathname;
 
-    // Health check endpoint (required by orchestrator)
+    // Enhanced health check endpoint with detailed service status
     if (pathname === '/health' && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ 
-            status: 'healthy', 
-            timestamp: new Date().toISOString(),
-            service: 'codespace-executor',
-            version: '1.0.0'
-        }));
+        try {
+            const healthStatus = await checkServiceHealth();
+            const httpStatus = healthStatus.status === 'healthy' ? 200 : 503;
+            
+            res.writeHead(httpStatus, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(healthStatus));
+        } catch (error: any) {
+            console.error('❌ Health check failed:', error.message);
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                status: 'unhealthy',
+                timestamp: new Date().toISOString(),
+                service: 'codespace-executor',
+                version: '1.0.0',
+                error: 'Health check failed',
+                details: error.message
+            }));
+        }
     }
     // Serve index.html at root
     else if (pathname === '/' && req.method === 'GET') {
@@ -1359,6 +1455,90 @@ async function shutdown(): Promise<void> {
         process.exit(1);
     }, 30000);
 }
+
+// Critical: Enhanced global error handlers with graceful recovery
+let errorCount = 0;
+let isInRecoveryMode = false;
+const MAX_ERRORS_BEFORE_SHUTDOWN = 10;
+const ERROR_RESET_INTERVAL = 60000; // 1 minute
+
+// Reset error count periodically
+setInterval(() => {
+    if (errorCount > 0) {
+        console.log(`🔄 Resetting error count from ${errorCount} to 0`);
+        errorCount = 0;
+        if (isInRecoveryMode) {
+            isInRecoveryMode = false;
+            console.log('✅ Exiting recovery mode - system stabilized');
+        }
+    }
+}, ERROR_RESET_INTERVAL);
+
+process.on('uncaughtException', (error: Error) => {
+    errorCount++;
+    console.error(`❌ Uncaught Exception (#${errorCount}):`, error.message);
+    console.error('Stack:', error.stack);
+    
+    // Enter recovery mode if we're seeing many errors
+    if (errorCount >= 3 && !isInRecoveryMode) {
+        isInRecoveryMode = true;
+        console.log('🔄 Entering recovery mode - implementing error quarantine...');
+    }
+    
+    // Attempt graceful recovery
+    try {
+        if (errorCount >= MAX_ERRORS_BEFORE_SHUTDOWN) {
+            console.error(`❌ Too many uncaught exceptions (${errorCount}), shutting down gracefully...`);
+            shutdown();
+            return;
+        }
+        
+        // Log system state for debugging
+        console.log(`🔍 System state: Memory usage: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB, Recovery mode: ${isInRecoveryMode}`);
+        console.log('🔄 Attempting to continue operation...');
+        
+        // Force garbage collection if available
+        if (global.gc) {
+            global.gc();
+            console.log('🧹 Forced garbage collection');
+        }
+        
+    } catch (recoveryError) {
+        console.error('❌ Recovery failed, shutting down:', recoveryError);
+        process.exit(1);
+    }
+});
+
+process.on('unhandledRejection', (reason: unknown, promise: Promise<any>) => {
+    errorCount++;
+    console.error(`❌ Unhandled Promise Rejection (#${errorCount}) at:`, promise);
+    console.error('Reason:', reason);
+    
+    // Enter recovery mode if we're seeing many errors
+    if (errorCount >= 3 && !isInRecoveryMode) {
+        isInRecoveryMode = true;
+        console.log('🔄 Entering recovery mode due to promise rejections...');
+    }
+    
+    if (errorCount >= MAX_ERRORS_BEFORE_SHUTDOWN) {
+        console.error(`❌ Too many unhandled rejections (${errorCount}), shutting down gracefully...`);
+        shutdown();
+        return;
+    }
+    
+    // Log the error but don't crash the server
+    console.log('🔄 Continuing operation despite unhandled rejection...');
+    
+    // Log system state for debugging
+    console.log(`🔍 System state: Memory usage: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB, Recovery mode: ${isInRecoveryMode}`);
+});
+
+process.on('warning', (warning: Error) => {
+    console.warn('⚠️ Node.js Warning:', warning.message);
+    if (warning.stack) {
+        console.warn('Stack:', warning.stack);
+    }
+});
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
