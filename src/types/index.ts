@@ -34,6 +34,7 @@ export interface ApiCalls {
 
 export interface DataVariableConfig {
   fetchOptions?: FetchOptions;
+  keyboardApiProxy?: KeyboardApiProxyConfig;
   headers?: Record<string, string>;
   timeout?: number;
   credential?: string;
@@ -67,6 +68,41 @@ export interface PassedVariables {
     passed_from: string;
     value: string;
     field_name?: string;
+  };
+}
+
+export interface KeyboardApiProxyConfig {
+  service: 'pipedream';
+  externalUserId: string;
+  accountId: string;
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: any;
+  timeout?: number;
+}
+
+export interface KeyboardApiProxyRequest {
+  service: 'pipedream';
+  externalUserId: string;
+  accountId: string;
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: any;
+}
+
+export interface KeyboardApiProxyResponse {
+  success: boolean;
+  data?: {
+    status: number;
+    headers: Record<string, string | string[]>;
+    body: any;
+  };
+  error?: {
+    message: string;
+    type: string;
+    code?: string;
   };
 }
 

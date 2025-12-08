@@ -1,6 +1,7 @@
 {
   "name": "simple-node-server",
   "version": "1.0.0",
+  "type": "module",
   "description": "A typescript server that allows keyboard to execute code'.",
   "main": "src/server.ts",
   "scripts": {

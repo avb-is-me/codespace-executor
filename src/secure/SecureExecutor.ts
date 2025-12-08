@@ -2,8 +2,13 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { randomBytes } from 'crypto';
-import { safeObfuscate } from '../utils/crypto';
-import { awaitedScriptGenerator, secureWrapperGenerator, isolatedDataVariableGenerator, isolatedDataMethodCodeGenerator, globalCodeWithDataMethodsGenerator } from './templates';
+import { fileURLToPath } from 'url';
+import { safeObfuscate } from '../utils/crypto.js';
+
+// ES Module equivalent of __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+import { awaitedScriptGenerator, secureWrapperGenerator, isolatedDataVariableGenerator, isolatedDataMethodCodeGenerator, globalCodeWithDataMethodsGenerator } from './templates.js';
 import {
     ExecutionPayload,
     ExecutionResult,
@@ -13,9 +18,12 @@ import {
     DataVariableConfig,
     DataMethodConfig,
     PassedVariables,
+    KeyboardApiProxyConfig,
+    KeyboardApiProxyResponse,
     // ApiCalls - imported but not used in current implementation
-} from '../types';
-import LocalLLM from '../local_llm/local';
+} from '../types/index.js';
+import LocalLLM from '../local_llm/local.js';
+import { executeKeyboardApiProxy } from '../utils/keyboard-api-client.js';
 
 export interface SecureExecutorOptions {
     timeout?: number;
@@ -33,6 +41,7 @@ interface ProcessOptions {
     use_asymmetric_encryption?: boolean;
     executionMode?: string;
     skipOutputSanitization?: boolean;
+    userJwt?: string;
 }
 
 // interface IsolatedExecutionResult {
@@ -49,6 +58,7 @@ export default class SecureExecutor {
     private maxDataMethodExecutionsPerHour: number;
     private maxDataMethods: number;
     private maxDataMethodTimeout: number;
+    private isConfidentialComputing: boolean = false;
 
     constructor(options: SecureExecutorOptions = {}) {
         this.defaultTimeout = options.timeout || 30000;
@@ -57,26 +67,37 @@ export default class SecureExecutor {
         this.maxDataMethods = options.maxDataMethods || 10;
         this.maxDataMethodTimeout = options.maxDataMethodTimeout || 15000;
 
+        // Detect confidential computing environment
+        this.isConfidentialComputing = this.detectConfidentialComputing();
+        
+        if (this.isConfidentialComputing) {
+            console.log('✅ Confidential computing environment detected');
+        } else {
+            console.warn('⚠️  Non-confidential environment - admin access possible');
+        }
+
         // Ensure temp directory exists
         if (!fs.existsSync(this.tempDir)) {
             fs.mkdirSync(this.tempDir, { recursive: true });
         }
     }
 
+    
+
 
     /**
      * Execute code with security isolation if needed
      */
-    async executeCode(payload: ExecutionPayload, headerEnvVars: Record<string, string> = {}): Promise<ExecutionResult> {
+    async executeCode(payload: ExecutionPayload, headerEnvVars: Record<string, string> = {}, userJwt?: string): Promise<ExecutionResult> {
         // Check for new secure data variables payload structure
         if (payload.secure_data_variables && payload.Global_code) {
-            return this.executeSecureWithDataVariables(payload, headerEnvVars);
+            return this.executeSecureWithDataVariables(payload, headerEnvVars, userJwt);
         }
 
         // Check for api_calls + global_code format (new restricted-run-code tool format)
         if (payload.api_calls && (payload.global_code || payload.Global_code)) {
             const convertedPayload = this.convertApiCallsToSecureDataVariables(payload);
-            return this.executeSecureWithDataVariables(convertedPayload, headerEnvVars);
+            return this.executeSecureWithDataVariables(convertedPayload, headerEnvVars, userJwt);
         }
 
         if (!payload.code) {
@@ -84,7 +105,7 @@ export default class SecureExecutor {
         }
 
         // Use full execution for simple code without structured API calls
-        return this.executeCodeFull(payload, headerEnvVars);
+        return this.executeCodeFull(payload, headerEnvVars, userJwt);
     }
 
     /**
@@ -170,7 +191,7 @@ export default class SecureExecutor {
     /**
      * Execute code with secure two-phase execution and isolated data variables (new format)
      */
-    async executeSecureWithDataVariables(payload: ExecutionPayload, headerEnvVars: Record<string, string> = {}): Promise<ExecutionResult> {
+    async executeSecureWithDataVariables(payload: ExecutionPayload, headerEnvVars: Record<string, string> = {}, userJwt?: string): Promise<ExecutionResult> {
         return new Promise(async (resolve, reject) => {
             try {
                 if (!payload.Global_code) {
@@ -183,9 +204,9 @@ export default class SecureExecutor {
                 // Validate global code doesn't try to access process.env.KEYBOARD_* variables
                 this.validateGlobalCodeForEnvAccess(payload.Global_code);
                 // Phase 1: Execute secure data variables in isolation
-                const sanitizedDataVariables = await this.executeDataVariablesPhase(payload.secure_data_variables, headerEnvVars);
+                const sanitizedDataVariables = await this.executeDataVariablesPhase(payload.secure_data_variables, headerEnvVars, userJwt);
                 // Phase 2: Execute global code with access to sanitized data
-                const result = await this.executeGlobalCodePhase(payload.Global_code, sanitizedDataVariables, payload);
+                const result = await this.executeGlobalCodePhase(payload.Global_code, sanitizedDataVariables, payload, userJwt);
 
                 resolve(result);
             } catch (error: any) {
@@ -228,12 +249,17 @@ export default class SecureExecutor {
     /**
      * Full execution mode (original behavior)
      */
-    async executeCodeFull(payload: ExecutionPayload, headerEnvVars: Record<string, string> = {}): Promise<ExecutionResult> {
+    async executeCodeFull(payload: ExecutionPayload, headerEnvVars: Record<string, string> = {}, userJwt?: string): Promise<ExecutionResult> {
         return new Promise((resolve, reject) => {
             const tempFile = `temp_full_${Date.now()}_${randomBytes(8).toString('hex')}.js`;
             const tempPath = path.join(this.tempDir, tempFile);
 
             let codeToExecute = payload.code!;
+
+            // Inject keyboard API proxy functionality if JWT is available
+            if (userJwt) {
+                codeToExecute = this.injectKeyboardApiProxyFunction(codeToExecute, userJwt);
+            }
 
             // Apply async wrapper if needed (same logic as original)
             const needsAsyncWrapper = codeToExecute.includes('await') ||
@@ -242,7 +268,8 @@ export default class SecureExecutor {
                 codeToExecute.includes('setTimeout') ||
                 codeToExecute.includes('setInterval') ||
                 codeToExecute.includes('https.request') ||
-                codeToExecute.includes('fetch(');
+                codeToExecute.includes('fetch(') ||
+                codeToExecute.includes('keyboardApiProxy('); // Add keyboard API proxy detection
 
             if (needsAsyncWrapper) {
                 const asyncTimeout = payload.asyncTimeout || 5000;
@@ -305,6 +332,82 @@ export default class SecureExecutor {
 
 
     /**
+     * Detect confidential computing environment
+     */
+    private detectConfidentialComputing(): boolean {
+        // Check for confidential computing indicators
+        const indicators = [
+            process.env.CONFIDENTIAL_COMPUTING_ENABLED === 'true',
+            process.env.EXECUTION_MODE === 'confidential',
+            process.env.SECURITY_LEVEL === 'CONFIDENTIAL',
+            this.checkHardwareSecurityFeatures()
+        ];
+        
+        return indicators.some(indicator => indicator);
+    }
+
+    /**
+     * Check for hardware-level security features
+     */
+    private checkHardwareSecurityFeatures(): boolean {
+        try {
+            // Check for AMD SEV-SNP
+            if (fs.existsSync('/sys/firmware/acpi/tables/COCO')) {
+                return true;
+            }
+            
+            // Check for Intel TDX
+            if (fs.existsSync('/sys/firmware/tdx')) {
+                return true;
+            }
+            
+            // Check for Intel SGX
+            if (fs.existsSync('/dev/sgx_enclave')) {
+                return true;
+            }
+            
+            // Check for gVisor runtime
+            if (process.env.GVISOR_ENABLED === 'true') {
+                return true;
+            }
+        } catch (error) {
+            // Fail safely - assume non-confidential if we can't detect
+            console.warn('Warning: Could not detect confidential computing features:', error);
+        }
+        
+        return false;
+    }
+
+    /**
+     * Get hardware security features available
+     */
+    private getHardwareSecurityFeatures(): string[] {
+        const features: string[] = [];
+        
+        try {
+            if (fs.existsSync('/sys/firmware/acpi/tables/COCO')) {
+                features.push('AMD-SEV-SNP');
+            }
+            
+            if (fs.existsSync('/sys/firmware/tdx')) {
+                features.push('Intel-TDX');
+            }
+            
+            if (fs.existsSync('/dev/sgx_enclave')) {
+                features.push('Intel-SGX');
+            }
+            
+            if (process.env.GVISOR_ENABLED === 'true') {
+                features.push('gVisor-Sandbox');
+            }
+        } catch (error) {
+            console.warn('Warning: Could not enumerate security features:', error);
+        }
+        
+        return features;
+    }
+
+    /**
      * Enhanced output sanitization for secure execution
      */
     sanitizeOutput(output: string): string {
@@ -312,6 +415,11 @@ export default class SecureExecutor {
 
         // Use existing obfuscation plus additional patterns
         let sanitized = safeObfuscate(output);
+
+        // Add confidential computing status warning in non-confidential environments
+        if (!this.isConfidentialComputing) {
+            sanitized = sanitized + ' [NON-CONFIDENTIAL-ENVIRONMENT]';
+        }
 
         // Additional patterns for environment variable leakage
         const envPatterns = [
@@ -444,7 +552,7 @@ export default class SecureExecutor {
     /**
      * Phase 1: Execute secure data variables in isolation with full credential access (new format)
      */
-    async executeDataVariablesPhase(secureDataVariables: SecureDataVariables, headerEnvVars: Record<string, string> = {}): Promise<any> {
+    async executeDataVariablesPhase(secureDataVariables: SecureDataVariables, headerEnvVars: Record<string, string> = {}, userJwt?: string): Promise<any> {
         // Security validation for data variables payload
         this.validateSecureDataVariablesPayload(secureDataVariables);
 
@@ -479,7 +587,7 @@ export default class SecureExecutor {
                 }
 
                 // Execute the data variable in isolation
-                const rawResult = await this.executeIsolatedDataVariable(variableName, configToExecute, headerEnvVars);
+                const rawResult = await this.executeIsolatedDataVariable(variableName, configToExecute, headerEnvVars, userJwt);
 
                 // Store raw result for dependency interpolation
                 resultsMap[variableName] = rawResult;
@@ -690,7 +798,7 @@ export default class SecureExecutor {
     }
 
     /**
-     * Get current execution mode info
+     * Get current execution mode info including confidential computing status
      */
     getExecutionInfo(): any {
         const enableSecureExecution = process.env.KEYBOARD_FULL_CODE_EXECUTION !== 'true';
@@ -698,7 +806,17 @@ export default class SecureExecutor {
             secureExecutionEnabled: enableSecureExecution,
             fullCodeExecution: !enableSecureExecution,
             environmentFlag: process.env.KEYBOARD_FULL_CODE_EXECUTION || 'false',
-            tempDirectory: this.tempDir
+            tempDirectory: this.tempDir,
+            confidentialComputing: this.isConfidentialComputing,
+            hardwareSecurityFeatures: this.getHardwareSecurityFeatures(),
+            securityLevel: this.isConfidentialComputing ? 'CONFIDENTIAL' : 'STANDARD',
+            executionEnvironment: {
+                platform: process.platform,
+                nodeVersion: process.version,
+                architecture: process.arch,
+                confidentialNodeDetected: process.env.CONFIDENTIAL_COMPUTING_ENABLED === 'true',
+                gvisorEnabled: process.env.GVISOR_ENABLED === 'true'
+            }
         };
     }
 
@@ -962,6 +1080,23 @@ export default class SecureExecutor {
             throw new Error('Invalid data variable configuration');
         }
 
+        // Check for mutually exclusive configuration options
+        const hasKeyboardApiProxy = !!config.keyboardApiProxy;
+        const hasFetchOptions = !!config.fetchOptions;
+
+        if (hasKeyboardApiProxy && hasFetchOptions) {
+            throw new Error('Cannot use both keyboardApiProxy and fetchOptions in the same data variable');
+        }
+
+        if (!hasKeyboardApiProxy && !hasFetchOptions) {
+            throw new Error('Data variable must have either keyboardApiProxy or fetchOptions configuration');
+        }
+
+        // Validate keyboardApiProxy if present
+        if (config.keyboardApiProxy) {
+            this.validateKeyboardApiProxyConfig(config.keyboardApiProxy);
+        }
+
         // Validate fetchOptions if present
         if (config.fetchOptions) {
             if (typeof config.fetchOptions !== 'object') {
@@ -1012,6 +1147,68 @@ export default class SecureExecutor {
                     throw new Error(`Invalid passed_from identifier: ${passedConfig.passed_from}`);
                 }
             }
+        }
+    }
+
+    /**
+     * Validate keyboard API proxy configuration
+     */
+    private validateKeyboardApiProxyConfig(config: KeyboardApiProxyConfig): void {
+        if (!config || typeof config !== 'object') {
+            throw new Error('Invalid keyboardApiProxy configuration');
+        }
+
+        // Validate service
+        if (config.service !== 'pipedream') {
+            throw new Error('Only "pipedream" service is currently supported for keyboardApiProxy');
+        }
+
+        // Validate required fields
+        if (!config.externalUserId || typeof config.externalUserId !== 'string') {
+            throw new Error('keyboardApiProxy.externalUserId must be a non-empty string');
+        }
+
+        if (!config.accountId || typeof config.accountId !== 'string') {
+            throw new Error('keyboardApiProxy.accountId must be a non-empty string');
+        }
+
+        if (!config.url || typeof config.url !== 'string') {
+            throw new Error('keyboardApiProxy.url must be a non-empty string');
+        }
+
+        // Validate URL format
+        try {
+            new URL(config.url);
+        } catch (error) {
+            throw new Error('keyboardApiProxy.url must be a valid URL');
+        }
+
+        // Validate method if present
+        if (config.method) {
+            const allowedMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+            if (!allowedMethods.includes(config.method.toUpperCase())) {
+                throw new Error('Invalid HTTP method in keyboardApiProxy');
+            }
+        }
+
+        // Validate headers if present
+        if (config.headers && typeof config.headers !== 'object') {
+            throw new Error('keyboardApiProxy.headers must be an object');
+        }
+
+        // Validate timeout if present
+        if (config.timeout && (typeof config.timeout !== 'number' || config.timeout < 0)) {
+            throw new Error('keyboardApiProxy.timeout must be a positive number');
+        }
+
+        // Validate externalUserId format (basic alphanumeric + dashes/underscores)
+        if (!/^[a-zA-Z0-9_-]+$/.test(config.externalUserId)) {
+            throw new Error('keyboardApiProxy.externalUserId must contain only alphanumeric characters, dashes, and underscores');
+        }
+
+        // Validate accountId format (must start with apn_)
+        if (!config.accountId.startsWith('apn_')) {
+            throw new Error('keyboardApiProxy.accountId must start with "apn_"');
         }
     }
 
@@ -1082,7 +1279,12 @@ export default class SecureExecutor {
     /**
      * Execute a single data variable in isolation with credential access (new format)
      */
-    private async executeIsolatedDataVariable(variableName: string, variableConfig: DataVariableConfig, headerEnvVars: Record<string, string>): Promise<any> {
+    private async executeIsolatedDataVariable(variableName: string, variableConfig: DataVariableConfig, headerEnvVars: Record<string, string>, userJwt?: string): Promise<any> {
+        // Check if this is a keyboard API proxy request
+        if (variableConfig.keyboardApiProxy) {
+            return this.executeKeyboardApiProxyVariable(variableName, variableConfig.keyboardApiProxy, userJwt);
+        }
+
         return new Promise((resolve, reject) => {
             const tempFile = `temp_data_variable_${Date.now()}_${randomBytes(8).toString('hex')}.js`;
             const tempPath = path.join(this.tempDir, tempFile);
@@ -1113,6 +1315,41 @@ export default class SecureExecutor {
                 reject(error);
             }
         });
+    }
+
+    /**
+     * Execute keyboard API proxy request for data variable
+     */
+    private async executeKeyboardApiProxyVariable(variableName: string, proxyConfig: KeyboardApiProxyConfig, userJwt?: string): Promise<any> {
+        try {
+            if (!userJwt) {
+                throw new Error('JWT is required for keyboard API proxy requests');
+            }
+
+            // Execute the keyboard API proxy request
+            const response = await executeKeyboardApiProxy(proxyConfig, userJwt);
+
+            // Return in the same format as isolated data method results
+            return {
+                data: {
+                    status: response.success ? 200 : 500,
+                    headers: response.data?.headers || {},
+                    body: response.data?.body || response.error,
+                    success: response.success
+                },
+                error: response.success ? null : response.error
+            };
+
+        } catch (error: any) {
+            console.error(`❌ Keyboard API proxy failed for ${variableName}:`, error.message);
+            return {
+                data: null,
+                error: {
+                    message: error.message || 'Keyboard API proxy request failed',
+                    type: 'keyboard_api_proxy_error'
+                }
+            };
+        }
     }
 
     /**
@@ -1437,13 +1674,13 @@ export default class SecureExecutor {
     /**
      * Phase 2: Execute global code with access to sanitized data methods
      */
-    private async executeGlobalCodePhase(globalCode: string, sanitizedDataMethods: any, originalPayload: ExecutionPayload): Promise<ExecutionResult> {
+    private async executeGlobalCodePhase(globalCode: string, sanitizedDataMethods: any, originalPayload: ExecutionPayload, userJwt?: string): Promise<ExecutionResult> {
         return new Promise((resolve, reject) => {
             const tempFile = `temp_global_${Date.now()}_${randomBytes(8).toString('hex')}.js`;
             const tempPath = path.join(this.tempDir, tempFile);
 
             // Generate the global code with data method injection
-            const globalCodeWithInjections = this.generateGlobalCodeWithDataMethods(globalCode, sanitizedDataMethods);
+            const globalCodeWithInjections = this.generateGlobalCodeWithDataMethods(globalCode, sanitizedDataMethods, userJwt);
             try {
                 fs.writeFileSync(tempPath, globalCodeWithInjections);
 
@@ -1474,8 +1711,8 @@ export default class SecureExecutor {
     /**
      * Generate global code with injected data method functions
      */
-    private generateGlobalCodeWithDataMethods(globalCode: string, sanitizedDataMethods: any): string {
-        return globalCodeWithDataMethodsGenerator(globalCode, sanitizedDataMethods);
+    private generateGlobalCodeWithDataMethods(globalCode: string, sanitizedDataMethods: any, userJwt?: string): string {
+        return globalCodeWithDataMethodsGenerator(globalCode, sanitizedDataMethods, userJwt);
     }
 
     /**
@@ -1495,6 +1732,116 @@ export default class SecureExecutor {
         // This ensures global code cannot access any credentials
 
         return secureEnv;
+    }
+
+    /**
+     * Inject keyboard API proxy function into user code for general execution
+     */
+    private injectKeyboardApiProxyFunction(userCode: string, userJwt: string): string {
+        const keyboardApiProxyFunction = `
+// Keyboard API Proxy function for Pipedream integration
+const keyboardApiProxy = async (config) => {
+    const https = require('https');
+    const http = require('http');
+    const { URL } = require('url');
+    
+    // Validate config
+    if (!config || typeof config !== 'object') {
+        throw new Error('keyboardApiProxy: config must be an object');
+    }
+    
+    const {
+        service = 'pipedream',
+        externalUserId,
+        accountId,
+        url,
+        method = 'GET',
+        headers = {},
+        body,
+        timeout = 30000
+    } = config;
+    
+    // Validate required fields
+    if (!externalUserId) {
+        throw new Error('keyboardApiProxy: externalUserId is required');
+    }
+    if (!accountId) {
+        throw new Error('keyboardApiProxy: accountId is required');
+    }
+    if (!url) {
+        throw new Error('keyboardApiProxy: url is required');
+    }
+    
+    const apiBaseUrl = process.env.KEYBOARD_API_BASE_URL || 'https://api.keyboard.dev';
+    const endpoint = '/api/pipedream/execute';
+    
+    const proxyRequest = {
+        service,
+        externalUserId,
+        accountId,
+        url,
+        method: method.toUpperCase(),
+        headers,
+        body
+    };
+    
+    return new Promise((resolve, reject) => {
+        const requestUrl = new URL(endpoint, apiBaseUrl);
+        const isHttps = requestUrl.protocol === 'https:';
+        const client = isHttps ? https : http;
+        
+        const requestBody = JSON.stringify(proxyRequest);
+        const requestOptions = {
+            hostname: requestUrl.hostname,
+            port: requestUrl.port || (isHttps ? 443 : 80),
+            path: requestUrl.pathname + requestUrl.search,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(requestBody),
+                'Authorization': 'Bearer ${userJwt}'
+            }
+        };
+        
+        const req = client.request(requestOptions, (res) => {
+            let responseData = '';
+            
+            res.on('data', (chunk) => {
+                responseData += chunk;
+            });
+            
+            res.on('end', () => {
+                try {
+                    const response = JSON.parse(responseData);
+                    
+                    if (res.statusCode >= 200 && res.statusCode < 300) {
+                        resolve(response.success ? response.data : { error: response.error });
+                    } else {
+                        reject(new Error(response.error || \`HTTP \${res.statusCode}\`));
+                    }
+                } catch (parseError) {
+                    reject(new Error('Failed to parse API response'));
+                }
+            });
+        });
+        
+        req.on('error', (error) => {
+            reject(error);
+        });
+        
+        req.setTimeout(timeout, () => {
+            req.destroy();
+            reject(new Error(\`Request timeout after \${timeout}ms\`));
+        });
+        
+        req.write(requestBody);
+        req.end();
+    });
+};
+
+`;
+        
+        return keyboardApiProxyFunction + userCode;
     }
 
     /**
