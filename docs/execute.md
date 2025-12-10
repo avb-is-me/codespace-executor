@@ -7,6 +7,8 @@ This document provides comprehensive examples of making requests to the `/execut
 - [Regular Code Execution](#regular-code-execution)
 - [Secure Code Execution (Two-Phase)](#secure-code-execution-two-phase)
 - [Pipedream-Style HTTP Requests](#pipedream-style-http-requests)
+  - [New Format: Multiple Chained Requests](#new-format-multiple-chained-requests)
+  - [Legacy Format: Single Request](#legacy-format-single-request)
 
 ---
 
