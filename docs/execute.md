@@ -217,6 +217,69 @@ axios.post('http://localhost:3000/execute', request, {
 .catch(error => console.error('❌ Error:', error.message));
 ```
 
+### Example 2b: Pipedream-Style API Request
+
+For Pipedream workflows, use `type: "pipedream"` or `pipedream: true` to route requests through Pipedream with JWT authentication:
+
+```javascript
+const axios = require('axios');
+
+const request = {
+  api_calls: {
+    createNotionPage: {
+      url: "https://api.notion.com/v1/pages",
+      method: "POST",
+      type: "pipedream",  // Use Pipedream execution with JWT auth
+      headers: {
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+        // NO Authorization header - handled by Pipedream JWT
+      },
+      body: {
+        parent: {
+          database_id: "your-database-id-here"
+        },
+        properties: {
+          Title: {
+            title: [{
+              text: { content: "New Task from Pipedream" }
+            }]
+          },
+          Status: {
+            select: { name: "To Do" }
+          }
+        }
+      }
+    }
+  },
+  global_code: `
+    const result = await createNotionPage();
+
+    console.log('Created page:', result.body.id);
+    console.log('Status:', result.status);
+
+    return {
+      pageId: result.body.id,
+      url: result.body.url,
+      status: result.status
+    };
+  `
+};
+
+axios.post('http://localhost:3000/execute', request, {
+  headers: {
+    'Content-Type': 'application/json',
+    // Pass Pipedream JWT token via header
+    'x-keyboard-pipedream-jwt-token': 'your-pipedream-jwt-token'
+  }
+})
+.then(response => {
+  console.log('✅ Success!');
+  console.log('Page Created:', response.data.data);
+})
+.catch(error => console.error('❌ Error:', error.message));
+```
+
 ### Example 3: Multiple Chained API Calls
 
 ```javascript

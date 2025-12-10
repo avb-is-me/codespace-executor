@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomBytes } from 'crypto';
 import { safeObfuscate } from '../utils/crypto';
-import { awaitedScriptGenerator, secureWrapperGenerator, isolatedDataVariableGenerator, isolatedDataMethodCodeGenerator, globalCodeWithDataMethodsGenerator } from './templates';
+import { awaitedScriptGenerator, secureWrapperGenerator, isolatedDataVariableGenerator, isolatedDataMethodCodeGenerator, globalCodeWithDataMethodsGenerator, isolatedPipedreamRequestGenerator } from './templates';
 import {
     ExecutionPayload,
     ExecutionResult,
@@ -124,7 +124,8 @@ export default class SecureExecutor {
                         body: apiConfig.body || null
                     },
                     headers: apiConfig.headers || {}
-                };
+                } as any;
+
                 // Add timeout if specified
                 if (apiConfig.timeout) {
                     secure_data_variables[functionName].timeout = apiConfig.timeout;
@@ -133,6 +134,11 @@ export default class SecureExecutor {
                 // Preserve passed_variables for dependency resolution
                 if (apiConfig.passed_variables) {
                     secure_data_variables[functionName].passed_variables = apiConfig.passed_variables;
+                }
+
+                // Preserve Pipedream type flag
+                if (apiConfig.type === 'pipedream' || apiConfig.pipedream === true) {
+                    (secure_data_variables[functionName] as any).isPipedream = true;
                 }
             }
 
@@ -1231,7 +1237,7 @@ return response;
             const tempPath = path.join(this.tempDir, tempFile);
 
             // Create isolated execution code for the data variable
-            const isolatedCode = this.generateIsolatedDataVariableCode(variableName, variableConfig);
+            const isolatedCode = this.generateIsolatedDataVariableCode(variableName, variableConfig, headerEnvVars);
 
             try {
                 fs.writeFileSync(tempPath, isolatedCode);
@@ -1298,15 +1304,28 @@ return response;
     /**
      * Generate isolated execution code for a data variable (new format)
      */
-    private generateIsolatedDataVariableCode(variableName: string, variableConfig: DataVariableConfig): string {
+    private generateIsolatedDataVariableCode(variableName: string, variableConfig: DataVariableConfig, headerEnvVars: Record<string, string>): string {
         let actualConfig;
         let actualConfigIsString = typeof variableConfig === "string"
         if (actualConfigIsString) actualConfig = JSON.parse(variableConfig as string)
         else actualConfig = variableConfig
 
+        // Check if this is a Pipedream request
+        const isPipedream = (actualConfig as any).isPipedream === true;
+
         const { credential } = actualConfig as any
         delete actualConfig["credential"]
+        delete actualConfig["isPipedream"] // Remove the flag from config
+
         let configCode = this.buildConfigObjectCode(actualConfig)
+
+        // Use different template for Pipedream requests
+        if (isPipedream) {
+            // Extract JWT token from headerEnvVars (look for pipedream-related auth header)
+            const jwtToken = headerEnvVars['KEYBOARD_PIPEDREAM_JWT_TOKEN'] || '';
+            let code = isolatedPipedreamRequestGenerator(configCode, jwtToken);
+            return code;
+        }
 
         let code = isolatedDataVariableGenerator(configCode)
         return code

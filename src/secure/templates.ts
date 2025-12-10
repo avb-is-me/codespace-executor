@@ -395,6 +395,157 @@ console.log("this is the isoldated data method code", isolatedDataMethodCode)
 return isolatedDataMethodCode
 }
 
+export function isolatedPipedreamRequestGenerator(configCode: string, jwtToken: string): string {
+    const isolatedPipedreamCode = `
+const https = require('https');
+const http = require('http');
+const { URL } = require('url');
+
+// Capture console output
+let capturedOutput = { stdout: '', stderr: '', data: null, error: null };
+
+const originalConsoleLog = console.log;
+const originalConsoleError = console.error;
+
+console.log = (...args) => {
+    const output = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+    capturedOutput.stdout += output + '\\n';
+    originalConsoleLog(...args);
+};
+
+console.error = (...args) => {
+    const output = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+    capturedOutput.stderr += output + '\\n';
+    originalConsoleError(...args);
+};
+
+async function executePipedreamRequest() {
+    try {
+        const config = ${configCode};
+
+        // Prepare fetch options
+        const fetchOptions = config.fetchOptions || {};
+        const headers = config.headers || {};
+
+        // Add JWT token for Pipedream authentication
+        const jwtToken = ${JSON.stringify(jwtToken)};
+        if (jwtToken) {
+            headers['Authorization'] = 'Bearer ' + jwtToken;
+        }
+
+        // Default to GET if no method specified
+        const method = (fetchOptions.method || 'GET').toUpperCase();
+
+        // Extract URL
+        const url = fetchOptions.url || config.url;
+        if (!url) {
+            throw new Error('No URL specified for Pipedream request');
+        }
+
+        // Prepare request data
+        const requestData = {
+            method: method,
+            headers: headers
+        };
+
+        if (fetchOptions.body && method !== 'GET' && method !== 'HEAD') {
+            requestData.body = typeof fetchOptions.body === 'object' ?
+                JSON.stringify(fetchOptions.body) : fetchOptions.body;
+
+            if (!headers['Content-Type'] && typeof fetchOptions.body === 'object') {
+                requestData.headers['Content-Type'] = 'application/json';
+            }
+        }
+
+        // Make HTTP request to Pipedream
+        const result = await makeHttpRequest(url, requestData);
+
+        capturedOutput.data = {
+            status: result.status,
+            headers: result.headers,
+            body: result.body,
+            success: true
+        };
+
+    } catch (error) {
+        capturedOutput.error = {
+            message: error.message,
+            type: error.constructor.name
+        };
+    }
+
+    // Output the captured result
+    console.log('ISOLATED_DATA_METHOD_RESULT:', JSON.stringify(capturedOutput));
+    process.exit(0);
+}
+
+function makeHttpRequest(url, options) {
+    return new Promise((resolve, reject) => {
+        const parsedUrl = new URL(url);
+        const isHttps = parsedUrl.protocol === 'https:';
+        const client = isHttps ? https : http;
+
+        const reqOptions = {
+            hostname: parsedUrl.hostname,
+            port: parsedUrl.port || (isHttps ? 443 : 80),
+            path: parsedUrl.pathname + parsedUrl.search,
+            method: options.method,
+            headers: options.headers || {}
+        };
+
+        const req = client.request(reqOptions, (res) => {
+            let data = '';
+
+            res.on('data', (chunk) => {
+                data += chunk;
+            });
+
+            res.on('end', () => {
+                try {
+                    const body = data.length > 0 ? (
+                        res.headers['content-type']?.includes('application/json') ?
+                        JSON.parse(data) : data
+                    ) : null;
+
+                    resolve({
+                        status: res.statusCode,
+                        headers: res.headers,
+                        body: body
+                    });
+                } catch (parseError) {
+                    resolve({
+                        status: res.statusCode,
+                        headers: res.headers,
+                        body: data
+                    });
+                }
+            });
+        });
+
+        req.on('error', (error) => {
+            reject(error);
+        });
+
+        // Write request body if present
+        if (options.body) {
+            req.write(options.body);
+        }
+
+        req.end();
+    });
+}
+
+// Execute the Pipedream request
+executePipedreamRequest().catch(error => {
+    console.error('❌ Pipedream request execution failed:', error.message);
+    process.exit(1);
+});
+`;
+
+    console.log("this is the isolated Pipedream request code", isolatedPipedreamCode);
+    return isolatedPipedreamCode;
+}
+
 export function globalCodeWithDataMethodsGenerator(globalCode: string, sanitizedDataMethods: any): string {
 
 

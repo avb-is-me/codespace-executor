@@ -64,6 +64,8 @@ export interface ApiCallConfig {
   body?: any;
   timeout?: number;
   passed_variables?: PassedVariables;
+  type?: 'pipedream' | 'default';
+  pipedream?: boolean;
 }
 
 export interface PipedreamRequestConfig {
