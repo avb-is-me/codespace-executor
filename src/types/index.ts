@@ -17,6 +17,11 @@ export interface ExecutionPayload {
   Secure_data_methods?: SecureDataMethods;
   api_calls?: ApiCalls;
   explanation_of_code?: string;
+  // Pipedream-style direct HTTP request format
+  url?: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: any;
   [key: string]: any;
 }
 

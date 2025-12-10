@@ -79,6 +79,12 @@ export default class SecureExecutor {
             return this.executeSecureWithDataVariables(convertedPayload, headerEnvVars);
         }
 
+        // Check for Pipedream-style direct HTTP request format (url + method at root level)
+        if (payload.url && payload.method) {
+            const convertedPayload = this.convertPipedreamToApiCalls(payload);
+            return this.executeSecureWithDataVariables(convertedPayload, headerEnvVars);
+        }
+
         if (!payload.code) {
             throw new Error('No code provided to execute');
         }
@@ -144,6 +150,62 @@ export default class SecureExecutor {
 
         } catch (error: any) {
             throw new Error(`Failed to convert api_calls payload: ${error.message}`);
+        }
+    }
+
+    /**
+     * Convert Pipedream-style direct HTTP request format to api_calls format
+     * Pipedream format: { url, method, headers, body } at root level
+     * Converts to: { api_calls: { httpRequest: {...} }, global_code: "..." }
+     */
+    convertPipedreamToApiCalls(payload: ExecutionPayload): ExecutionPayload {
+        try {
+            if (!payload.url) {
+                throw new Error('No url found in Pipedream payload');
+            }
+            if (!payload.method) {
+                throw new Error('No method found in Pipedream payload');
+            }
+
+            // Create an api_calls structure with a single function named "httpRequest"
+            const api_calls: any = {
+                httpRequest: {
+                    url: payload.url,
+                    method: payload.method.toUpperCase(),
+                    headers: payload.headers || {},
+                    body: payload.body || null
+                }
+            };
+
+            // Add timeout if specified
+            if (payload.timeout) {
+                api_calls.httpRequest.timeout = payload.timeout;
+            }
+
+            // Generate simple global_code that executes the request and returns the result
+            const global_code = `
+const response = await httpRequest();
+console.log('HTTP Response Status:', response.status);
+console.log('HTTP Response Body:', JSON.stringify(response.body, null, 2));
+return response;
+            `.trim();
+
+            // Convert to api_calls format and then to secure_data_variables
+            const apiCallsPayload = {
+                api_calls: api_calls,
+                global_code: global_code,
+                timeout: payload.timeout || 30000,
+                ai_eval: payload.ai_eval || false,
+                encrypt_messages: payload.encrypt_messages || false,
+                use_asymmetric_encryption: payload.use_asymmetric_encryption || false,
+                explanation_of_code: payload.explanation_of_code
+            };
+
+            // Now convert this to secure_data_variables format
+            return this.convertApiCallsToSecureDataVariables(apiCallsPayload);
+
+        } catch (error: any) {
+            throw new Error(`Failed to convert Pipedream payload: ${error.message}`);
         }
     }
 
