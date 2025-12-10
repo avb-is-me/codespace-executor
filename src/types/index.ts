@@ -16,8 +16,9 @@ export interface ExecutionPayload {
   secure_data_variables?: SecureDataVariables;
   Secure_data_methods?: SecureDataMethods;
   api_calls?: ApiCalls;
+  pipedream?: PipedreamRequests;
   explanation_of_code?: string;
-  // Pipedream-style direct HTTP request format
+  // Pipedream-style direct HTTP request format (legacy single-request format)
   url?: string;
   method?: string;
   headers?: Record<string, string>;
@@ -35,6 +36,10 @@ export interface SecureDataMethods {
 
 export interface ApiCalls {
   [functionName: string]: ApiCallConfig;
+}
+
+export interface PipedreamRequests {
+  [requestName: string]: PipedreamRequestConfig;
 }
 
 export interface DataVariableConfig {
@@ -55,6 +60,15 @@ export interface DataMethodConfig {
 export interface ApiCallConfig {
   url: string;
   method?: string;
+  headers?: Record<string, string>;
+  body?: any;
+  timeout?: number;
+  passed_variables?: PassedVariables;
+}
+
+export interface PipedreamRequestConfig {
+  url: string;
+  method: string;
   headers?: Record<string, string>;
   body?: any;
   timeout?: number;

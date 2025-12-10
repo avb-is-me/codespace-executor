@@ -79,7 +79,14 @@ export default class SecureExecutor {
             return this.executeSecureWithDataVariables(convertedPayload, headerEnvVars);
         }
 
+        // Check for Pipedream object format (new format similar to api_calls)
+        if (payload.pipedream && (payload.global_code || payload.Global_code)) {
+            const convertedPayload = this.convertPipedreamObjectToApiCalls(payload);
+            return this.executeSecureWithDataVariables(convertedPayload, headerEnvVars);
+        }
+
         // Check for Pipedream-style direct HTTP request format (url + method at root level)
+        // This is the legacy single-request format
         if (payload.url && payload.method) {
             const convertedPayload = this.convertPipedreamToApiCalls(payload);
             return this.executeSecureWithDataVariables(convertedPayload, headerEnvVars);
@@ -154,9 +161,83 @@ export default class SecureExecutor {
     }
 
     /**
+     * Convert Pipedream object format to api_calls format
+     * Pipedream format: { pipedream: { requestName: { url, method, headers, body, passed_variables } }, global_code: "..." }
+     * This is the new format that supports multiple requests and chaining like api_calls
+     */
+    convertPipedreamObjectToApiCalls(payload: ExecutionPayload): ExecutionPayload {
+        try {
+            if (!payload.pipedream) {
+                throw new Error('No pipedream object found in payload');
+            }
+
+            const api_calls: any = {};
+
+            // Convert each pipedream request to api_calls format
+            for (const [requestName, requestConfig] of Object.entries(payload.pipedream)) {
+                // Validate request name is a valid JavaScript identifier
+                if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(requestName)) {
+                    throw new Error(`Invalid request name: ${requestName}. Must be a valid JavaScript identifier.`);
+                }
+
+                const config = requestConfig as any;
+
+                if (!config.url) {
+                    throw new Error(`Missing url in pipedream request: ${requestName}`);
+                }
+                if (!config.method) {
+                    throw new Error(`Missing method in pipedream request: ${requestName}`);
+                }
+
+                // Convert to api_calls format
+                api_calls[requestName] = {
+                    url: config.url,
+                    method: config.method.toUpperCase(),
+                    headers: config.headers || {},
+                    body: config.body || null
+                };
+
+                // Add timeout if specified
+                if (config.timeout) {
+                    api_calls[requestName].timeout = config.timeout;
+                }
+
+                // Preserve passed_variables for dependency resolution
+                if (config.passed_variables) {
+                    api_calls[requestName].passed_variables = config.passed_variables;
+                }
+            }
+
+            // Use provided global_code or Global_code
+            let globalCode = payload.Global_code || payload.global_code;
+            if (!globalCode) {
+                throw new Error('Missing global_code or Global_code in pipedream payload');
+            }
+
+            // Convert to api_calls format and then to secure_data_variables
+            const apiCallsPayload = {
+                api_calls: api_calls,
+                global_code: globalCode,
+                timeout: payload.timeout || 30000,
+                ai_eval: payload.ai_eval || false,
+                encrypt_messages: payload.encrypt_messages || false,
+                use_asymmetric_encryption: payload.use_asymmetric_encryption || false,
+                explanation_of_code: payload.explanation_of_code
+            };
+
+            // Now convert this to secure_data_variables format
+            return this.convertApiCallsToSecureDataVariables(apiCallsPayload);
+
+        } catch (error: any) {
+            throw new Error(`Failed to convert Pipedream object payload: ${error.message}`);
+        }
+    }
+
+    /**
      * Convert Pipedream-style direct HTTP request format to api_calls format
      * Pipedream format: { url, method, headers, body } at root level
      * Converts to: { api_calls: { httpRequest: {...} }, global_code: "..." }
+     * This is the legacy single-request format
      */
     convertPipedreamToApiCalls(payload: ExecutionPayload): ExecutionPayload {
         try {
