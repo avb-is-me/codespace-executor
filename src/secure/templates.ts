@@ -395,7 +395,7 @@ console.log("this is the isoldated data method code", isolatedDataMethodCode)
 return isolatedDataMethodCode
 }
 
-export function globalCodeWithDataMethodsGenerator(globalCode: string, sanitizedDataMethods: any): string {
+export function globalCodeWithDataMethodsGenerator(globalCode: string, sanitizedDataMethods: any, userJwt?: string): string {
 
 
     // Create function injections for each data method
@@ -411,6 +411,9 @@ async function ${methodName}() {
     return methodData.data || methodData;
 }`;
     }).join('\n');
+
+    // Generate keyboard API proxy function if JWT is available
+    const keyboardApiProxyInjection = userJwt ? generateKeyboardApiProxyFunction(userJwt) : '';
 
     // Build the code safely using concatenation instead of template literals
     const wrapperStart = `
@@ -469,6 +472,9 @@ process.env = new Proxy(originalProcessEnv, {
 // Inject sanitized data methods
 ${methodInjections}
 
+// Inject keyboard API proxy function if available
+${keyboardApiProxyInjection}
+
 // Execute global code in secure context
 (async () => {
     try {
@@ -518,4 +524,111 @@ process.on('uncaughtException', (error) => {
     console.log("this is the full code", finalFullCode)
     // Concatenate the parts to avoid template literal issues
     return finalFullCode
+}
+
+/**
+ * Generate keyboard API proxy function for injection into global code
+ */
+function generateKeyboardApiProxyFunction(userJwt: string): string {
+    return `
+// Keyboard API Proxy function for Pipedream integration (secure global context)
+async function keyboardApiProxy(config) {
+    const https = require('https');
+    const http = require('http');
+    const { URL } = require('url');
+    
+    // Validate config
+    if (!config || typeof config !== 'object') {
+        throw new Error('keyboardApiProxy: config must be an object');
+    }
+    
+    const {
+        service = 'pipedream',
+        externalUserId,
+        accountId,
+        url,
+        method = 'GET',
+        headers = {},
+        body,
+        timeout = 30000
+    } = config;
+    
+    // Validate required fields
+    if (!externalUserId) {
+        throw new Error('keyboardApiProxy: externalUserId is required');
+    }
+    if (!accountId) {
+        throw new Error('keyboardApiProxy: accountId is required');
+    }
+    if (!url) {
+        throw new Error('keyboardApiProxy: url is required');
+    }
+    
+    const apiBaseUrl = 'https://api.keyboard.dev'; // Fixed in secure context
+    const endpoint = '/api/pipedream/execute';
+    
+    const proxyRequest = {
+        service,
+        externalUserId,
+        accountId,
+        url,
+        method: method.toUpperCase(),
+        headers,
+        body
+    };
+    
+    return new Promise((resolve, reject) => {
+        const requestUrl = new URL(endpoint, apiBaseUrl);
+        const isHttps = requestUrl.protocol === 'https:';
+        const client = isHttps ? https : http;
+        
+        const requestBody = JSON.stringify(proxyRequest);
+        const requestOptions = {
+            hostname: requestUrl.hostname,
+            port: requestUrl.port || (isHttps ? 443 : 80),
+            path: requestUrl.pathname + requestUrl.search,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(requestBody),
+                'Authorization': 'Bearer ${userJwt.replace(/"/g, '\\"')}'
+            }
+        };
+        
+        const req = client.request(requestOptions, (res) => {
+            let responseData = '';
+            
+            res.on('data', (chunk) => {
+                responseData += chunk;
+            });
+            
+            res.on('end', () => {
+                try {
+                    const response = JSON.parse(responseData);
+                    
+                    if (res.statusCode >= 200 && res.statusCode < 300) {
+                        resolve(response.success ? response.data : { error: response.error });
+                    } else {
+                        reject(new Error(response.error || \`HTTP \${res.statusCode}\`));
+                    }
+                } catch (parseError) {
+                    reject(new Error('Failed to parse keyboard API response'));
+                }
+            });
+        });
+        
+        req.on('error', (error) => {
+            reject(error);
+        });
+        
+        req.setTimeout(timeout, () => {
+            req.destroy();
+            reject(new Error(\`Request timeout after \${timeout}ms\`));
+        });
+        
+        req.write(requestBody);
+        req.end();
+    });
+}
+`;
 }

@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: codespace-executor
-        image: registry.digitalocean.com/orchestrator-registry/codespace-executor:amd64-secure-auth
+        image: gcr.io/your-confidential-executor/codespace-executor:confidential-latest
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 3001
