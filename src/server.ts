@@ -195,11 +195,13 @@ async function checkServiceHealth(): Promise<any> {
 
 const server = http.createServer(async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     // Parse URL for better routing
+    await verifyBearerTokenForUser(req, res);
     const parsedUrl = url.parse(req.url || '', true);
     const pathname = parsedUrl.pathname;
 
     // Enhanced health check endpoint with detailed service status
     if (pathname === '/health' && req.method === 'GET') {
+        await verifyBearerTokenForUser(req, res);
         try {
             const healthStatus = await checkServiceHealth();
             const httpStatus = healthStatus.status === 'healthy' ? 200 : 503;
@@ -221,6 +223,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     }
     // Serve index.html at root
     else if (pathname === '/' && req.method === 'GET') {
+        await verifyBearerTokenForUser(req, res);
         const indexPath = path.join(__dirname, '../../index.html');
         fs.readFile(indexPath, (err, data) => {
             if (err) {
@@ -234,6 +237,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     }
     // API endpoint to list files in shareable_assets directory
     else if (pathname === '/files' && req.method === 'GET') {
+        await verifyBearerTokenForUser(req, res);
         const assetsDir = path.join(__dirname, '../../shareable_assets');
         
         fs.readdir(assetsDir, { withFileTypes: true }, (err, entries) => {
@@ -276,6 +280,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     }
     // Serve static files from shareable_assets directory
     else if (pathname?.startsWith('/shareable_assets/') && req.method === 'GET') {
+        await verifyBearerTokenForUser(req, res);
         const fileName = pathname.slice('/shareable_assets/'.length);
         const filePath = path.join(__dirname, '../shareable_assets', fileName);
 
@@ -318,6 +323,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
         });
     }
     else if (req.method === 'POST' && req.url === '/local-llm/initialize') {
+        await verifyBearerTokenForUser(req, res);
         // Initialize Local LLM (start Ollama and ensure model is ready)
         (async (): Promise<void> => {
             try {
@@ -338,6 +344,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
             }
         })();
     } else if (req.method === 'GET' && req.url === '/local-llm/status') {
+        await verifyBearerTokenForUser(req, res);
         // Get Local LLM status
         (async (): Promise<void> => {
             try {
@@ -352,6 +359,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
             }
         })();
     } else if (req.method === 'POST' && req.url === '/local-llm/chat') {
+        await verifyBearerTokenForUser(req, res);
         // Chat with Local LLM
         let body = '';
         req.on('data', chunk => {
@@ -380,6 +388,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
             }
         });
     } else if (req.method === 'POST' && req.url === '/local-llm/stop') {
+        await verifyBearerTokenForUser(req, res);
         // Stop Local LLM service
         (async (): Promise<void> => {
             try {
@@ -398,6 +407,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
             }
         })();
     } else if (req.method === 'POST' && req.url === '/ollama/chat') {
+        await verifyBearerTokenForUser(req, res);
         // Legacy Ollama chat endpoint (updated to use gemma3:1b by default)
         let body = '';
         req.on('data', chunk => {
@@ -439,6 +449,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
             }
         });
     } else if (req.method === 'GET' && req.url === '/ollama/status') {
+        await verifyBearerTokenForUser(req, res);
         // Legacy Ollama status endpoint (updated for gemma3:1b)
         (async (): Promise<void> => {
             try {
@@ -471,6 +482,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
             }
         })();
     } else if (req.method === 'POST' && req.url === '/create_project') {
+        await verifyBearerTokenForUser(req, res);
         let body = '';
 
         req.on('data', chunk => {
@@ -494,6 +506,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
             }
         });
     } else if(req.method === 'POST' && req.url === '/fetch_key_name_and_resources') {
+        await verifyBearerTokenForUser(req, res);
         let body = '';
 
         req.on('data', chunk => {
@@ -522,6 +535,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
         });
 
     } else if (req.method === 'GET' && req.url === '/crypto/public-key') {
+        await verifyBearerTokenForUser(req, res);
         // Get public encryption key (requires bearer token authentication)
         (async (): Promise<void> => {
             try {
@@ -773,6 +787,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     
     // Job management endpoints
     } else if (req.method === 'POST' && req.url === '/jobs') {
+        await verifyBearerTokenForUser(req, res);
         // Submit new background job
         let body = '';
         req.on('data', chunk => {
@@ -887,6 +902,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
         });
     
     } else if (req.method === 'GET' && req.url?.startsWith('/jobs/')) {
+        await verifyBearerTokenForUser(req, res);
         // Get specific job status
         const pathParts = req.url.split('/');
         const jobId = pathParts[2]?.split('?')[0]; // Handle query params
@@ -984,6 +1000,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
         }
     
     } else if (req.method === 'GET' && req.url?.startsWith('/jobs')) {
+        await verifyBearerTokenForUser(req, res);
         // List all jobs
         try {
             const url = new URL(req.url, `http://${req.headers.host}`);
@@ -1048,6 +1065,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
         }
     
     } else if (req.method === 'DELETE' && req.url?.startsWith('/jobs/')) {
+        await verifyBearerTokenForUser(req, res);
         // Cancel/delete specific job
         const pathParts = req.url.split('/');
         const jobId = pathParts[2];
@@ -1100,6 +1118,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
         }
     
     } else if (req.method === 'GET' && req.url === '/jobs-stats') {
+        await verifyBearerTokenForUser(req, res);
         // Get job system statistics
         try {
             const stats = getJobManager().getStats();
