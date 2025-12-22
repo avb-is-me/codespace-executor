@@ -8,7 +8,7 @@ dotenv.config();
 
 // Polyfill crypto for jose library
 if (!globalThis.crypto) {
-    globalThis.crypto = webcrypto as any;
+  globalThis.crypto = webcrypto as any;
 }
 
 const ISSUER_URL = "https://login.keyboard.dev"
@@ -29,41 +29,106 @@ class JWKSCache {
     this.JWKS_URI = jwksUri;
   }
 
-  // Pre-fetch keys at startup
+  // Pre-fetch keys at startup with retry logic
   async initialize(): Promise<void> {
-    try {
-      await this.refreshKeys();
-      this.isReady = true;
-      
-      // Refresh keys every 10 minutes
-      this.refreshInterval = setInterval(() => {
-        this.refreshKeys().catch((error) => {
-          console.error('❌ Scheduled JWKS refresh failed:', error.message);
-        });
-      }, this.REFRESH_INTERVAL);
-      
-      console.log('✅ JWKS cache initialized and ready');
-    } catch (error: any) {
-      console.error('❌ Failed to initialize JWKS cache:', error.message);
-      this.isReady = false;
-      throw error;
+    const maxRetries = 3;
+    const retryDelays = [1000, 2000, 4000]; // Exponential backoff: 1s, 2s, 4s
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        await this.refreshKeys();
+        this.isReady = true;
+
+        // Refresh keys every 10 minutes
+        this.refreshInterval = setInterval(() => {
+          this.refreshKeys().catch((error) => {
+            console.error('❌ Scheduled JWKS refresh failed:', error.message);
+            // Start background retry if scheduled refresh fails
+            this.startBackgroundRetry();
+          });
+        }, this.REFRESH_INTERVAL);
+
+        console.log('✅ JWKS cache initialized and ready');
+        return;
+      } catch (error: any) {
+        const isLastAttempt = attempt === maxRetries - 1;
+        console.error(`❌ JWKS cache init attempt ${attempt + 1}/${maxRetries} failed:`, error.message);
+
+        if (isLastAttempt) {
+          // On final failure, don't throw - make it non-fatal
+          this.isReady = false;
+          console.error('⚠️  JWKS cache initialization failed after all retries - WebSocket auth will not work until cache is ready');
+          console.error('⚠️  Starting background retry loop...');
+          this.startBackgroundRetry();
+          return; // Don't throw, allow server to start
+        } else {
+          // Wait before retrying
+          await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
+        }
+      }
     }
+  }
+
+  // Background retry for JWKS cache initialization
+  private startBackgroundRetry(): void {
+    if (this.isReady || this.refreshInterval) return; // Already ready or retrying
+
+    console.log('🔄 Starting background JWKS retry (every 10 seconds)...');
+    this.refreshInterval = setInterval(async () => {
+      try {
+        await this.refreshKeys();
+        this.isReady = true;
+        console.log('✅ JWKS cache recovered and ready!');
+
+        // Stop retry loop and start normal refresh interval
+        if (this.refreshInterval) {
+          clearInterval(this.refreshInterval);
+          this.refreshInterval = null;
+        }
+
+        this.refreshInterval = setInterval(() => {
+          this.refreshKeys().catch((error) => {
+            console.error('❌ Scheduled JWKS refresh failed:', error.message);
+          });
+        }, this.REFRESH_INTERVAL);
+      } catch (error: any) {
+        console.error('❌ Background JWKS retry failed:', error.message);
+        // Continue retrying
+      }
+    }, 10000); // Retry every 10 seconds
   }
 
   private async refreshKeys(): Promise<void> {
     try {
       console.log('🔄 Refreshing JWKS keys...');
-      const response = await fetch(this.JWKS_URI);
-      
-      if (!response.ok) {
-        throw new Error(`JWKS fetch failed: ${response.status} ${response.statusText}`);
+
+      // Add 10 second timeout to prevent hanging
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      try {
+        const response = await fetch(this.JWKS_URI, {
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          throw new Error(`JWKS fetch failed: ${response.status} ${response.statusText}`);
+        }
+
+        this.jwksData = await response.json();
+        this.lastRefresh = Date.now();
+
+        console.log(`✅ Loaded ${this.jwksData.keys?.length || 0} signing keys`);
+      } catch (error: any) {
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+          throw new Error('JWKS fetch timeout after 10 seconds');
+        }
+        throw error;
       }
-      
-      this.jwksData = await response.json();
-      this.lastRefresh = Date.now();
-      
-      console.log(`✅ Loaded ${this.jwksData.keys?.length || 0} signing keys`);
-      
+
     } catch (error: any) {
       console.error('❌ Failed to refresh JWKS keys:', error.message);
       throw error;
@@ -109,14 +174,11 @@ interface VerificationResult {
 
 /**
  * Initialize JWKS cache - call this at server startup
+ * Non-fatal: Will start background retry if initialization fails
  */
 export async function initializeJWKSCache(): Promise<void> {
-  try {
-    await jwksCache.initialize();
-  } catch (error: any) {
-    console.error('❌ Failed to initialize JWKS cache:', error.message);
-    throw error;
-  }
+  await jwksCache.initialize();
+  // Note: initialize() no longer throws, it handles failures internally
 }
 
 /**
@@ -144,13 +206,13 @@ export function verifyBearerTokenSync(token: string): boolean {
 
   try {
     const jwks = jwksCache.getJWKS();
-    
+
     // Log token details for debugging (first/last few chars only)
-    const tokenPreview = token.length > 20 
+    const tokenPreview = token.length > 20
       ? `${token.substring(0, 10)}...${token.substring(token.length - 10)}`
       : token;
     console.log(`🔍 Verifying JWT token: ${tokenPreview}`);
-    
+
     // Use our synchronous JWT verification
     const result = verifyJWTSync(token, jwks, {
       issuer: ISSUER_URL,
@@ -248,17 +310,17 @@ export function cleanupJWKSCache(): void {
   jwksCache.cleanup();
 }
 
-export async function verifyBearerTokenForUser (req: http.IncomingMessage, res: http.ServerResponse) {
+export async function verifyBearerTokenForUser(req: http.IncomingMessage, res: http.ServerResponse) {
   const authHeader = req.headers['authorization'];
   const token = extractBearerToken(authHeader);
 
   if (!token) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-          error: 'Unauthorized',
-          message: 'Bearer token required. Please provide Authorization header with Bearer token.'
-      }));
-      return;
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'Unauthorized',
+      message: 'Bearer token required. Please provide Authorization header with Bearer token.'
+    }));
+    return;
   }
 
   // Try synchronous verification first
@@ -267,12 +329,42 @@ export async function verifyBearerTokenForUser (req: http.IncomingMessage, res: 
     // Fallback to async verification if sync fails
     const isValid = await verifyBearerToken(token);
     if (!isValid) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-            error: 'Unauthorized',
-            message: 'Invalid or expired bearer token'
-        }));
-        return;
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: 'Unauthorized',
+        message: 'Invalid or expired bearer token'
+      }));
+      return;
     }
   }
+}
+
+export async function verifyHTTPBearerTokenForUser(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> {
+  const authHeader = req.headers['authorization'];
+  const token = extractBearerToken(authHeader);
+
+  if (!token) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'Unauthorized',
+      message: 'Bearer token required. Please provide Authorization header with Bearer token.'
+    }));
+    return false;
+  }
+
+  // Try synchronous verification first
+
+
+  // Fallback to async verification if sync fails
+  const isValid = await verifyBearerToken(token);
+  if (!isValid) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'Unauthorized',
+      message: 'Invalid or expired bearer token'
+    }));
+    return false;
+  }
+
+  return true;
 }

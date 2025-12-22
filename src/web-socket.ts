@@ -104,14 +104,12 @@ export class WebSocketServer {
 
   private async initializeWebSocket(): Promise<void> {
     // Initialize JWKS cache for synchronous JWT verification
-    try {
-      await initializeJWKSCache();
-      console.log('✅ JWKS cache ready for synchronous verification');
-    } catch (error: any) {
-      console.error('❌ Failed to initialize JWKS cache:', error.message);
-      throw error; // Fail startup if JWKS cache cannot be initialized
-    }
-    
+    // Non-blocking: Server will start even if JWKS cache fails
+    await initializeJWKSCache();
+
+    // JWKS cache initialization is now non-fatal and includes background retry
+    // WebSocket server will reject connections until cache is ready
+
     this.setupWebSocketServer()
   }
 

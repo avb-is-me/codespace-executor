@@ -1,22 +1,25 @@
 import { spawn } from 'child_process';
+import { randomBytes } from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { randomBytes } from 'crypto';
-import { safeObfuscate } from '../utils/crypto.js';
-import { awaitedScriptGenerator, secureWrapperGenerator, isolatedDataVariableGenerator, isolatedDataMethodCodeGenerator, globalCodeWithDataMethodsGenerator } from './templates.js';
+import { fileURLToPath } from 'url';
+import LocalLLM from '../local_llm/local.js';
 import {
+    ApiCallConfig,
+    DataMethodConfig,
+    DataVariableConfig,
     ExecutionPayload,
     ExecutionResult,
-    CodeAnalysis,
-    SecureDataVariables,
-    SecureDataMethods,
-    DataVariableConfig,
-    DataMethodConfig,
     PassedVariables,
-    ApiCallConfig,
-    // ApiCalls - imported but not used in current implementation
+    SecureDataMethods,
+    SecureDataVariables
 } from '../types/index.js';
-import LocalLLM from '../local_llm/local.js';
+import { safeObfuscate } from '../utils/crypto.js';
+import { awaitedScriptGenerator, globalCodeWithDataMethodsGenerator, isolatedDataMethodCodeGenerator, isolatedDataVariableGenerator } from './templates.js';
+
+// ES Module equivalent of __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export interface SecureExecutorOptions {
     timeout?: number;
