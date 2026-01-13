@@ -31,6 +31,10 @@ const DEFAULT_CONFIG: Required<XfceDesktopConfig> = {
   enableChrome: false,
 };
 
+// Retry configuration for Docker-in-Docker startup timing
+const DOCKER_READY_MAX_RETRIES = 30;  // Max attempts to wait for Docker
+const DOCKER_READY_RETRY_DELAY_MS = 2000;  // 2 seconds between retries
+
 export class XfceDesktopService {
   private config: Required<XfceDesktopConfig>;
   private chromeInstallProcess: ChildProcess | null = null;
@@ -40,15 +44,57 @@ export class XfceDesktopService {
   }
 
   /**
-   * Check if Docker is available
+   * Check if Docker CLI is installed
    */
-  async isDockerAvailable(): Promise<boolean> {
+  async isDockerInstalled(): Promise<boolean> {
     try {
       await execAsync('docker --version');
       return true;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Check if Docker daemon is ready and responding
+   */
+  async isDockerReady(): Promise<boolean> {
+    try {
+      // docker info will fail if daemon isn't ready
+      await execAsync('docker info', { timeout: 5000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Wait for Docker daemon to be ready (handles Docker-in-Docker startup delay)
+   */
+  async waitForDockerReady(): Promise<boolean> {
+    console.log('[XFCE Desktop] Waiting for Docker daemon to be ready...');
+
+    for (let attempt = 1; attempt <= DOCKER_READY_MAX_RETRIES; attempt++) {
+      if (await this.isDockerReady()) {
+        console.log(`[XFCE Desktop] Docker daemon is ready (attempt ${attempt})`);
+        return true;
+      }
+
+      if (attempt < DOCKER_READY_MAX_RETRIES) {
+        console.log(`[XFCE Desktop] Docker not ready, retrying in ${DOCKER_READY_RETRY_DELAY_MS / 1000}s (attempt ${attempt}/${DOCKER_READY_MAX_RETRIES})...`);
+        await this.sleep(DOCKER_READY_RETRY_DELAY_MS);
+      }
+    }
+
+    console.error(`[XFCE Desktop] Docker daemon not ready after ${DOCKER_READY_MAX_RETRIES} attempts`);
+    return false;
+  }
+
+  /**
+   * Sleep helper
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**
@@ -131,13 +177,22 @@ export class XfceDesktopService {
    * Start the XFCE desktop container
    */
   async start(): Promise<XfceDesktopStatus> {
-    // Check if Docker is available
-    const dockerAvailable = await this.isDockerAvailable();
-    if (!dockerAvailable) {
-      console.error('[XFCE Desktop] Docker is not available');
+    // Check if Docker CLI is installed
+    const dockerInstalled = await this.isDockerInstalled();
+    if (!dockerInstalled) {
+      console.error('[XFCE Desktop] Docker CLI is not installed');
       return {
         running: false,
-        error: 'Docker is not available. Enable Docker-in-Docker in devcontainer.json',
+        error: 'Docker is not installed. Enable Docker-in-Docker in devcontainer.json',
+      };
+    }
+
+    // Wait for Docker daemon to be ready (handles DinD startup delay)
+    const dockerReady = await this.waitForDockerReady();
+    if (!dockerReady) {
+      return {
+        running: false,
+        error: 'Docker daemon not ready after waiting. Check Docker-in-Docker configuration.',
       };
     }
 
