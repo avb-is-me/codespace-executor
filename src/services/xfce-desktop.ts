@@ -166,7 +166,7 @@ export class XfceDesktopService {
         '-e', `PGID=${process.getgid?.() || 1000}`,
         '-e', `TZ=${this.config.timezone}`,
         '-e', 'SUBFOLDER=/',
-        '-e', 'TITLE=XFCE Desktop',
+        '-e', 'TITLE="XFCE Desktop"',
         '-p', `${this.config.webPort}:3000`,
         '-p', `${this.config.vncPort}:3001`,
         this.config.image,
