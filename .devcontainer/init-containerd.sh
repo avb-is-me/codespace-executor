@@ -21,18 +21,21 @@ if [ ! -S /var/run/docker/containerd/containerd.sock ]; then
         echo "Starting containerd..."
         sudo nohup containerd --config /var/run/docker/containerd/containerd.toml > /tmp/containerd.log 2>&1 &
 
-        # Wait for socket to be created
-        for i in {1..10}; do
+        # Wait for socket to be created (up to 2 minutes during system bootup)
+        echo "Waiting for containerd socket to be created..."
+        for i in {1..120}; do
             if [ -S /var/run/docker/containerd/containerd.sock ]; then
-                echo "Containerd socket created successfully"
+                echo "Containerd socket created successfully (after ${i}s)"
                 break
             fi
-            echo "Waiting for containerd socket... ($i/10)"
+            if [ $((i % 10)) -eq 0 ]; then
+                echo "Still waiting for containerd socket... (${i}/120s)"
+            fi
             sleep 1
         done
 
         if [ ! -S /var/run/docker/containerd/containerd.sock ]; then
-            echo "ERROR: Containerd socket was not created after 10 seconds"
+            echo "ERROR: Containerd socket was not created after 120 seconds"
             echo "Containerd logs:"
             cat /tmp/containerd.log 2>/dev/null || echo "No logs available"
             exit 1
