@@ -40,7 +40,7 @@ export class XfceDesktopService {
   }
 
   /**
-   * Check if Docker is available
+   * Check if Docker is available (binary exists)
    */
   async isDockerAvailable(): Promise<boolean> {
     try {
@@ -49,6 +49,43 @@ export class XfceDesktopService {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Check if Docker daemon is ready and responsive
+   */
+  async isDockerReady(): Promise<boolean> {
+    try {
+      await execAsync('docker info', { timeout: 10000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Wait for Docker to be fully ready (daemon running and responsive)
+   * This handles the case where Docker-in-Docker is still initializing
+   */
+  async waitForDockerReady(maxWaitSeconds: number = 120): Promise<boolean> {
+    console.log('[XFCE Desktop] Waiting for Docker daemon to be ready...');
+
+    for (let i = 0; i < maxWaitSeconds; i++) {
+      if (await this.isDockerReady()) {
+        console.log(`[XFCE Desktop] Docker daemon ready (after ${i + 1}s)`);
+        return true;
+      }
+
+      // Log progress every 10 seconds
+      if ((i + 1) % 10 === 0) {
+        console.log(`[XFCE Desktop] Still waiting for Docker daemon... (${i + 1}/${maxWaitSeconds}s)`);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    console.error(`[XFCE Desktop] Docker daemon not ready after ${maxWaitSeconds} seconds`);
+    return false;
   }
 
   /**
@@ -173,16 +210,25 @@ export class XfceDesktopService {
   }
 
   /**
-   * Start the XFCE desktop container
+   * Start the XFCE desktop container with retry logic
    */
-  async start(): Promise<XfceDesktopStatus> {
-    // Check if Docker is available
+  async start(maxRetries: number = 3): Promise<XfceDesktopStatus> {
+    // Check if Docker binary is available
     const dockerAvailable = await this.isDockerAvailable();
     if (!dockerAvailable) {
       console.error('[XFCE Desktop] Docker is not available');
       return {
         running: false,
         error: 'Docker is not available. Enable Docker-in-Docker in devcontainer.json',
+      };
+    }
+
+    // Wait for Docker daemon to be ready (handles boot timing issues)
+    const dockerReady = await this.waitForDockerReady(120);
+    if (!dockerReady) {
+      return {
+        running: false,
+        error: 'Docker daemon not ready after 120 seconds',
       };
     }
 
@@ -194,50 +240,74 @@ export class XfceDesktopService {
 
     console.log('[XFCE Desktop] Starting XFCE desktop...');
 
-    try {
-      // Ensure containerd is running
-      await this.ensureContainerdRunning();
+    // Retry logic for starting the container
+    let lastError: string = '';
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`[XFCE Desktop] Start attempt ${attempt}/${maxRetries}`);
 
-      // Clean up any existing container
-      await this.cleanup();
+        // Ensure containerd is running
+        await this.ensureContainerdRunning();
 
-      // Pull image if needed
-      await this.pullImage();
+        // Clean up any existing container
+        await this.cleanup();
 
-      // Build docker run command
-      const dockerArgs = [
-        'run', '-d',
-        '--name', this.config.containerName,
-        '--security-opt', 'seccomp=unconfined',
-        '--shm-size', this.config.shmSize,
-        '-e', `PUID=${process.getuid?.() || 1000}`,
-        '-e', `PGID=${process.getgid?.() || 1000}`,
-        '-e', `TZ=${this.config.timezone}`,
-        '-e', 'SUBFOLDER=/',
-        '-e', 'TITLE="XFCE Desktop"',
-        '-p', `${this.config.webPort}:3000`,
-        '-p', `${this.config.vncPort}:3001`,
-        this.config.image,
-      ];
+        // Pull image if needed
+        await this.pullImage();
 
-      // Start the container
-      await execAsync(`docker ${dockerArgs.join(' ')}`);
+        // Build docker run command
+        const dockerArgs = [
+          'run', '-d',
+          '--name', this.config.containerName,
+          '--security-opt', 'seccomp=unconfined',
+          '--shm-size', this.config.shmSize,
+          '-e', `PUID=${process.getuid?.() || 1000}`,
+          '-e', `PGID=${process.getgid?.() || 1000}`,
+          '-e', `TZ=${this.config.timezone}`,
+          '-e', 'SUBFOLDER=/',
+          '-e', 'TITLE="XFCE Desktop"',
+          '-p', `${this.config.webPort}:3000`,
+          '-p', `${this.config.vncPort}:3001`,
+          this.config.image,
+        ];
 
-      console.log(`[XFCE Desktop] Started on port ${this.config.webPort}`);
+        // Start the container
+        await execAsync(`docker ${dockerArgs.join(' ')}`);
 
-      // Optionally install Chrome in background
-      if (this.config.enableChrome) {
-        this.installChromeInBackground();
+        // Wait a moment for container to start
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Verify container is running
+        if (await this.isRunning()) {
+          console.log(`[XFCE Desktop] Started successfully on port ${this.config.webPort}`);
+
+          // Optionally install Chrome in background
+          if (this.config.enableChrome) {
+            this.installChromeInBackground();
+          }
+
+          return this.getStatus();
+        } else {
+          throw new Error('Container started but is not running');
+        }
+      } catch (error: any) {
+        lastError = error.message;
+        console.error(`[XFCE Desktop] Attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+
+        if (attempt < maxRetries) {
+          // Exponential backoff: 5s, 10s, 20s
+          const waitTime = 5000 * Math.pow(2, attempt - 1);
+          console.log(`[XFCE Desktop] Waiting ${waitTime / 1000}s before retry...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
       }
-
-      return this.getStatus();
-    } catch (error: any) {
-      console.error(`[XFCE Desktop] Failed to start: ${error.message}`);
-      return {
-        running: false,
-        error: error.message,
-      };
     }
+
+    console.error(`[XFCE Desktop] Failed to start after ${maxRetries} attempts`);
+    return {
+      running: false,
+      error: `Failed after ${maxRetries} attempts. Last error: ${lastError}`,
+    };
   }
 
   /**
