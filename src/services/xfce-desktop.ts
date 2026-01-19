@@ -1,4 +1,4 @@
-import { exec, execSync, spawn, ChildProcess } from 'child_process';
+import { exec, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -95,6 +95,51 @@ export class XfceDesktopService {
   }
 
   /**
+   * Ensure containerd is running properly
+   */
+  async ensureContainerdRunning(): Promise<void> {
+    try {
+      // Check if the containerd socket exists
+      const { stdout } = await execAsync('ls /var/run/docker/containerd/containerd.sock 2>/dev/null || echo "missing"');
+
+      if (stdout.trim() === 'missing') {
+        console.log('[XFCE Desktop] Containerd socket missing, restarting containerd...');
+
+        // Restart containerd directly
+        try {
+          // Kill any existing containerd processes
+          await execAsync('sudo pkill -9 containerd 2>/dev/null || true');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
+          // Start containerd with the Docker-managed config
+          await execAsync('sudo nohup containerd --config /var/run/docker/containerd/containerd.toml > /tmp/containerd.log 2>&1 &');
+
+          // Wait for socket to be created (up to 2 minutes during system bootup)
+          console.log('[XFCE Desktop] Waiting for containerd socket to be created...');
+          for (let i = 0; i < 120; i++) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            const { stdout: checkSocket } = await execAsync('ls /var/run/docker/containerd/containerd.sock 2>/dev/null || echo "missing"');
+            if (checkSocket.trim() !== 'missing') {
+              console.log(`[XFCE Desktop] Containerd socket created successfully (after ${i + 1}s)`);
+              return;
+            }
+            // Log progress every 10 seconds to show we're still waiting
+            if ((i + 1) % 10 === 0) {
+              console.log(`[XFCE Desktop] Still waiting for containerd socket... (${i + 1}/120s)`);
+            }
+          }
+
+          throw new Error('Containerd socket was not created after 120 seconds');
+        } catch (restartError: any) {
+          throw new Error(`Failed to restart containerd: ${restartError.message}`);
+        }
+      }
+    } catch (error: any) {
+      throw new Error(`Containerd initialization failed: ${error.message}`);
+    }
+  }
+
+  /**
    * Pull the XFCE desktop image if not present
    */
   async pullImage(): Promise<void> {
@@ -150,6 +195,9 @@ export class XfceDesktopService {
     console.log('[XFCE Desktop] Starting XFCE desktop...');
 
     try {
+      // Ensure containerd is running
+      await this.ensureContainerdRunning();
+
       // Clean up any existing container
       await this.cleanup();
 
