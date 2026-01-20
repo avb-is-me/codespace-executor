@@ -64,6 +64,78 @@ export class XfceDesktopService {
   }
 
   /**
+   * Detect if Docker is experiencing containerd communication issues
+   * Returns true if containerd timeout errors are detected
+   */
+  async detectContainerdIssue(): Promise<boolean> {
+    try {
+      await execAsync('docker ps 2>&1', { timeout: 5000 });
+      return false; // Command succeeded
+    } catch (error: any) {
+      const errorMsg = error.message || '';
+      // Check for containerd-specific timeout errors
+      return (
+        errorMsg.includes('dial unix:///var/run/docker/containerd/containerd.sock: timeout') ||
+        errorMsg.includes('connection error: desc = "transport: Error while dialing') ||
+        errorMsg.includes('error creating temporary lease: Unavailable')
+      );
+    }
+  }
+
+  /**
+   * Restart Docker daemon and containerd
+   * This resolves the containerd socket timeout issue
+   */
+  async restartDocker(): Promise<boolean> {
+    console.log('[XFCE Desktop] Restarting Docker daemon to fix containerd issue...');
+
+    try {
+      // Kill dockerd and containerd processes
+      await execAsync('sudo killall dockerd containerd', { timeout: 5000 }).catch(() => {
+        // Ignore errors if processes don't exist
+      });
+
+      // Wait for processes to terminate
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Start dockerd in the background
+      // Using nohup to ensure it stays running even if the parent process exits
+      await execAsync('sudo nohup dockerd > /tmp/docker-restart.log 2>&1 &', { timeout: 5000 });
+
+      // Wait for Docker to initialize
+      await new Promise(resolve => setTimeout(resolve, 5000));
+
+      // Verify Docker is responsive
+      const isReady = await this.isDockerReady();
+      if (isReady) {
+        console.log('[XFCE Desktop] Docker daemon restarted successfully');
+        return true;
+      } else {
+        console.error('[XFCE Desktop] Docker daemon failed to become ready after restart');
+        return false;
+      }
+    } catch (error: any) {
+      console.error(`[XFCE Desktop] Failed to restart Docker: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Detect and recover from Docker/containerd issues
+   * Returns true if recovery was successful or not needed
+   */
+  async detectAndRecoverDockerIssues(): Promise<boolean> {
+    const hasContainerdIssue = await this.detectContainerdIssue();
+
+    if (hasContainerdIssue) {
+      console.log('[XFCE Desktop] Detected containerd communication issue, attempting recovery...');
+      return await this.restartDocker();
+    }
+
+    return true; // No issues detected
+  }
+
+  /**
    * Check if containerd socket exists (indicates Docker is fully initialized)
    */
   async isContainerdSocketReady(): Promise<boolean> {
@@ -214,6 +286,15 @@ export class XfceDesktopService {
       return {
         running: false,
         error: 'Docker daemon not ready after 120 seconds',
+      };
+    }
+
+    // Detect and recover from any Docker/containerd issues
+    const dockerHealthy = await this.detectAndRecoverDockerIssues();
+    if (!dockerHealthy) {
+      return {
+        running: false,
+        error: 'Docker daemon is not healthy and recovery failed',
       };
     }
 
