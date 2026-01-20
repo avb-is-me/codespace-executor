@@ -2,6 +2,8 @@ import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import { generateKeyPair } from './utils/asymmetric-crypto.js';
 import { XfceDesktopService, isXfceDesktopEnabled, XfceDesktopConfig } from './services/xfce-desktop.js';
+import ProxyService from './proxy/ProxyService.js';
+import { ProxyConfig, WhitelistConfig } from './types/index.js';
 
 interface ServiceConfig {
   name: string;
@@ -22,6 +24,7 @@ export class ServiceBootstrap {
   private services: ServiceProcess[] = [];
   private readonly projectRoot: string;
   private xfceDesktop: XfceDesktopService | null = null;
+  private proxyService: ProxyService | null = null;
 
   constructor() {
     // Get project root (parent directory of dist/src)
@@ -58,8 +61,82 @@ export class ServiceBootstrap {
       await this.startService(serviceConfig);
     }
 
+    // Start HTTP Proxy service for URL whitelisting
+    await this.startProxyService();
+
     // Start XFCE Desktop if enabled
     await this.startXfceDesktop();
+  }
+
+  /**
+   * Start the HTTP Proxy service for URL whitelisting
+   */
+  private async startProxyService(): Promise<void> {
+    const proxyEnabled = process.env.PROXY_ENABLED === 'true';
+
+    if (!proxyEnabled) {
+      console.log('[ServiceBootstrap] HTTP Proxy is disabled (set PROXY_ENABLED=true to enable)');
+      return;
+    }
+
+    console.log('[ServiceBootstrap] Starting HTTP Proxy service...');
+
+    try {
+      // Build whitelist from environment variables
+      const whitelist: WhitelistConfig = {
+        domains: this.getProxyWhitelist(),
+        allowLocalhost: process.env.PROXY_ALLOW_LOCALHOST === 'true',
+        allowPrivateNetworks: process.env.PROXY_ALLOW_PRIVATE_NETWORKS === 'true'
+      };
+
+      const config: Partial<ProxyConfig> = {
+        enabled: true,
+        host: process.env.PROXY_HOST || '127.0.0.1',
+        port: parseInt(process.env.PROXY_PORT || '8888', 10),
+        whitelist,
+        logBlocked: process.env.PROXY_LOG_BLOCKED !== 'false',
+        logAllowed: process.env.PROXY_LOG_ALLOWED === 'true'
+      };
+
+      this.proxyService = new ProxyService(config);
+      await this.proxyService.start();
+
+      console.log(`[ServiceBootstrap] HTTP Proxy started on ${config.host}:${config.port}`);
+      console.log(`[ServiceBootstrap] Whitelist: ${whitelist.domains.length} domain patterns`);
+    } catch (error: any) {
+      console.error(`[ServiceBootstrap] HTTP Proxy failed to start: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get proxy whitelist from environment variable
+   */
+  private getProxyWhitelist(): string[] {
+    const envWhitelist = process.env.PROXY_WHITELIST;
+    if (envWhitelist) {
+      return envWhitelist.split(',').map(d => d.trim()).filter(d => d.length > 0);
+    }
+
+    // Default trusted domains
+    return [
+      // Common API providers
+      'api.github.com',
+      '*.github.com',
+      'api.notion.com',
+      '*.notion.com',
+      'api.openai.com',
+      '*.anthropic.com',
+      'api.stripe.com',
+      '*.googleapis.com',
+      '*.google.com',
+      // Keyboard.dev
+      '*.keyboard.dev',
+      'login.keyboard.dev',
+      // CDNs and common services
+      '*.cloudflare.com',
+      '*.amazonaws.com',
+      '*.azure.com'
+    ];
   }
 
   /**
@@ -176,6 +253,14 @@ export class ServiceBootstrap {
       status: service.status,
     }));
 
+    // Add HTTP Proxy status if enabled
+    if (this.proxyService) {
+      statuses.push({
+        name: 'HTTP Proxy',
+        status: this.proxyService.isRunning() ? 'running' : 'stopped',
+      });
+    }
+
     // Add XFCE Desktop status if enabled
     if (this.xfceDesktop) {
       statuses.push({
@@ -195,9 +280,26 @@ export class ServiceBootstrap {
   }
 
   /**
+   * Get HTTP Proxy service instance (if enabled)
+   */
+  getProxyService(): ProxyService | null {
+    return this.proxyService;
+  }
+
+  /**
    * Shutdown all services gracefully
    */
   async shutdown(): Promise<void> {
+    // Stop HTTP Proxy service if running
+    if (this.proxyService && this.proxyService.isRunning()) {
+      try {
+        console.log('[ServiceBootstrap] Stopping HTTP Proxy...');
+        await this.proxyService.stop();
+      } catch (error: any) {
+        console.error(`[ServiceBootstrap] Failed to stop HTTP Proxy: ${error.message}`);
+      }
+    }
+
     // Stop XFCE Desktop container if running
     if (this.xfceDesktop) {
       try {

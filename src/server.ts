@@ -57,11 +57,35 @@ function getJobManager(): JobManager {
 
 function getSecureExecutor(): SecureExecutor {
     if (!secureExecutor) {
+        // Get proxy environment variables from the proxy service if available
+        let proxyEnvVars: Record<string, string> = {};
+        if (serviceBootstrap) {
+            const proxyService = serviceBootstrap.getProxyService();
+            if (proxyService && proxyService.isRunning()) {
+                proxyEnvVars = proxyService.getProxyEnvVars();
+                console.log('[SecureExecutor] Proxy environment configured:', proxyService.getProxyUrl());
+            }
+        }
+
         secureExecutor = new SecureExecutor({
-            timeout: 30000
+            timeout: 30000,
+            proxyEnvVars
         });
     }
     return secureExecutor;
+}
+
+/**
+ * Update SecureExecutor with proxy environment variables
+ * Called after proxy service starts
+ */
+function updateSecureExecutorProxy(): void {
+    if (serviceBootstrap && secureExecutor) {
+        const proxyService = serviceBootstrap.getProxyService();
+        if (proxyService && proxyService.isRunning()) {
+            secureExecutor.setProxyEnvVars(proxyService.getProxyEnvVars());
+        }
+    }
 }
 
 // Legacy Ollama integration (keeping for backward compatibility)
@@ -111,12 +135,93 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
     // Health check endpoint (required by orchestrator)
     if (pathname === '/health' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ 
-            status: 'healthy', 
+        res.end(JSON.stringify({
+            status: 'healthy',
             timestamp: new Date().toISOString(),
             service: 'codespace-executor',
             version: '1.0.0'
         }));
+    }
+    // Proxy status endpoint
+    else if (pathname === '/proxy/status' && req.method === 'GET') {
+        const proxyService = serviceBootstrap?.getProxyService();
+        if (proxyService) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                enabled: true,
+                running: proxyService.isRunning(),
+                url: proxyService.getProxyUrl(),
+                config: proxyService.getConfig(),
+                stats: proxyService.getStats()
+            }));
+        } else {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                enabled: false,
+                running: false,
+                message: 'Proxy service is not enabled. Set PROXY_ENABLED=true to enable.'
+            }));
+        }
+    }
+    // Proxy whitelist management endpoint
+    else if (pathname === '/proxy/whitelist' && req.method === 'GET') {
+        const proxyService = serviceBootstrap?.getProxyService();
+        if (proxyService) {
+            const config = proxyService.getConfig();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                domains: config.whitelist.domains,
+                allowLocalhost: config.whitelist.allowLocalhost,
+                allowPrivateNetworks: config.whitelist.allowPrivateNetworks
+            }));
+        } else {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Proxy service not enabled' }));
+        }
+    }
+    // Add domains to proxy whitelist
+    else if (pathname === '/proxy/whitelist' && req.method === 'POST') {
+        const proxyService = serviceBootstrap?.getProxyService();
+        if (!proxyService) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Proxy service not enabled' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', () => {
+            try {
+                const { domains, action } = JSON.parse(body);
+                if (!Array.isArray(domains)) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'domains must be an array' }));
+                    return;
+                }
+
+                if (action === 'add') {
+                    proxyService.addToWhitelist(domains);
+                } else if (action === 'remove') {
+                    proxyService.removeFromWhitelist(domains);
+                } else if (action === 'replace') {
+                    proxyService.updateWhitelist(domains);
+                } else {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'action must be add, remove, or replace' }));
+                    return;
+                }
+
+                const config = proxyService.getConfig();
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: true,
+                    domains: config.whitelist.domains
+                }));
+            } catch (error: any) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Invalid JSON', details: error.message }));
+            }
+        });
     }
     // Serve index.html at root
     else if (pathname === '/' && req.method === 'GET') {
@@ -1318,12 +1423,15 @@ server.listen(PORT, async () => {
     
     
 
-    // 🎯 Boot up additional services (Ollama, WebSocket, etc.)
+    // 🎯 Boot up additional services (Ollama, WebSocket, Proxy, etc.)
     try {
         serviceBootstrap = await bootUpServices();
-        
+
+        // Update SecureExecutor with proxy configuration if proxy is running
+        updateSecureExecutorProxy();
+
     } catch (error: any) {
-        
+        console.error('❌ Failed to boot services:', error.message);
     }
 });
 

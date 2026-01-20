@@ -23,6 +23,7 @@ export interface SecureExecutorOptions {
     maxDataMethodExecutionsPerHour?: number;
     maxDataMethods?: number;
     maxDataMethodTimeout?: number;
+    proxyEnvVars?: Record<string, string>;
 }
 
 interface ProcessOptions {
@@ -49,6 +50,7 @@ export default class SecureExecutor {
     private maxDataMethodExecutionsPerHour: number;
     private maxDataMethods: number;
     private maxDataMethodTimeout: number;
+    private proxyEnvVars: Record<string, string>;
 
     constructor(options: SecureExecutorOptions = {}) {
         this.defaultTimeout = options.timeout || 30000;
@@ -56,11 +58,27 @@ export default class SecureExecutor {
         this.maxDataMethodExecutionsPerHour = options.maxDataMethodExecutionsPerHour || 100;
         this.maxDataMethods = options.maxDataMethods || 10;
         this.maxDataMethodTimeout = options.maxDataMethodTimeout || 15000;
+        this.proxyEnvVars = options.proxyEnvVars || {};
 
         // Ensure temp directory exists
         if (!fs.existsSync(this.tempDir)) {
             fs.mkdirSync(this.tempDir, { recursive: true });
         }
+    }
+
+    /**
+     * Update proxy environment variables
+     */
+    setProxyEnvVars(proxyEnvVars: Record<string, string>): void {
+        this.proxyEnvVars = proxyEnvVars;
+        console.log('[SecureExecutor] Proxy environment variables updated');
+    }
+
+    /**
+     * Get current proxy environment variables
+     */
+    getProxyEnvVars(): Record<string, string> {
+        return { ...this.proxyEnvVars };
     }
 
 
@@ -274,6 +292,11 @@ export default class SecureExecutor {
                 // Add header env vars
                 if (headerEnvVars && typeof headerEnvVars === 'object') {
                     Object.assign(limitedEnv, headerEnvVars);
+                }
+
+                // Add proxy environment variables to route traffic through the proxy
+                if (this.proxyEnvVars && Object.keys(this.proxyEnvVars).length > 0) {
+                    Object.assign(limitedEnv, this.proxyEnvVars);
                 }
 
                 this.executeProcess('node', [tempPath], {
@@ -1295,6 +1318,11 @@ export default class SecureExecutor {
             Object.assign(isolatedEnv, headerEnvVars);
         }
 
+        // Add proxy environment variables to route traffic through the proxy
+        if (this.proxyEnvVars && Object.keys(this.proxyEnvVars).length > 0) {
+            Object.assign(isolatedEnv, this.proxyEnvVars);
+        }
+
         return isolatedEnv;
     }
 
@@ -1493,6 +1521,12 @@ export default class SecureExecutor {
 
         // Explicitly NO KEYBOARD environment variables
         // This ensures global code cannot access any credentials
+
+        // Add proxy environment variables to route traffic through the proxy
+        // This ensures even global code traffic is filtered through the whitelist
+        if (this.proxyEnvVars && Object.keys(this.proxyEnvVars).length > 0) {
+            Object.assign(secureEnv, this.proxyEnvVars);
+        }
 
         return secureEnv;
     }

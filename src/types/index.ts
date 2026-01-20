@@ -249,3 +249,36 @@ export interface AsymmetricEncryptionConfig {
 }
 
 export type SecureExecutionResult = ExecutionResult;
+
+// Proxy configuration types
+export interface ProxyConfig {
+  enabled: boolean;
+  host: string;
+  port: number;
+  whitelist: WhitelistConfig;
+  logBlocked: boolean;
+  logAllowed: boolean;
+}
+
+export interface WhitelistConfig {
+  domains: string[];  // Exact domains or patterns like "*.github.com"
+  allowLocalhost: boolean;
+  allowPrivateNetworks: boolean;
+}
+
+export interface ProxyRequestLog {
+  timestamp: string;
+  method: string;
+  url: string;
+  host: string;
+  allowed: boolean;
+  reason?: string;
+}
+
+export interface ProxyStats {
+  totalRequests: number;
+  allowedRequests: number;
+  blockedRequests: number;
+  startedAt: string;
+  recentBlocked: ProxyRequestLog[];
+}
