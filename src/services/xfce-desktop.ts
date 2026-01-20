@@ -64,6 +64,18 @@ export class XfceDesktopService {
   }
 
   /**
+   * Check if containerd socket exists (indicates Docker is fully initialized)
+   */
+  async isContainerdSocketReady(): Promise<boolean> {
+    try {
+      const { stdout } = await execAsync('sudo ls /var/run/docker/containerd/containerd.sock 2>/dev/null || echo "missing"');
+      return stdout.trim() !== 'missing';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Wait for Docker to be fully ready (daemon running and responsive)
    * This handles the case where Docker-in-Docker is still initializing
    */
@@ -71,14 +83,18 @@ export class XfceDesktopService {
     console.log('[XFCE Desktop] Waiting for Docker daemon to be ready...');
 
     for (let i = 0; i < maxWaitSeconds; i++) {
-      if (await this.isDockerReady()) {
-        console.log(`[XFCE Desktop] Docker daemon ready (after ${i + 1}s)`);
+      // Check both docker info and containerd socket
+      const dockerReady = await this.isDockerReady();
+      const containerdReady = await this.isContainerdSocketReady();
+
+      if (dockerReady && containerdReady) {
+        console.log(`[XFCE Desktop] Docker daemon and containerd fully ready (after ${i + 1}s)`);
         return true;
       }
 
-      // Log progress every 10 seconds
+      // Log progress every 10 seconds with detailed status
       if ((i + 1) % 10 === 0) {
-        console.log(`[XFCE Desktop] Still waiting for Docker daemon... (${i + 1}/${maxWaitSeconds}s)`);
+        console.log(`[XFCE Desktop] Still waiting for Docker... (${i + 1}/${maxWaitSeconds}s) - docker: ${dockerReady ? 'ready' : 'waiting'}, containerd: ${containerdReady ? 'ready' : 'waiting'}`);
       }
 
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -132,47 +148,16 @@ export class XfceDesktopService {
   }
 
   /**
-   * Ensure containerd is running properly
+   * Verify Docker is fully operational by running a simple test
    */
-  async ensureContainerdRunning(): Promise<void> {
+  async verifyDockerOperational(): Promise<boolean> {
     try {
-      // Check if the containerd socket exists
-      const { stdout } = await execAsync('ls /var/run/docker/containerd/containerd.sock 2>/dev/null || echo "missing"');
-
-      if (stdout.trim() === 'missing') {
-        console.log('[XFCE Desktop] Containerd socket missing, restarting containerd...');
-
-        // Restart containerd directly
-        try {
-          // Kill any existing containerd processes
-          await execAsync('sudo pkill -9 containerd 2>/dev/null || true');
-          await new Promise(resolve => setTimeout(resolve, 1000));
-
-          // Start containerd with the Docker-managed config
-          await execAsync('sudo nohup containerd --config /var/run/docker/containerd/containerd.toml > /tmp/containerd.log 2>&1 &');
-
-          // Wait for socket to be created (up to 2 minutes during system bootup)
-          console.log('[XFCE Desktop] Waiting for containerd socket to be created...');
-          for (let i = 0; i < 120; i++) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            const { stdout: checkSocket } = await execAsync('ls /var/run/docker/containerd/containerd.sock 2>/dev/null || echo "missing"');
-            if (checkSocket.trim() !== 'missing') {
-              console.log(`[XFCE Desktop] Containerd socket created successfully (after ${i + 1}s)`);
-              return;
-            }
-            // Log progress every 10 seconds to show we're still waiting
-            if ((i + 1) % 10 === 0) {
-              console.log(`[XFCE Desktop] Still waiting for containerd socket... (${i + 1}/120s)`);
-            }
-          }
-
-          throw new Error('Containerd socket was not created after 120 seconds');
-        } catch (restartError: any) {
-          throw new Error(`Failed to restart containerd: ${restartError.message}`);
-        }
-      }
+      // Try to list images - this requires full Docker + containerd stack to be working
+      await execAsync('docker images', { timeout: 5000 });
+      return true;
     } catch (error: any) {
-      throw new Error(`Containerd initialization failed: ${error.message}`);
+      console.log(`[XFCE Desktop] Docker not fully operational yet: ${error.message}`);
+      return false;
     }
   }
 
@@ -246,8 +231,10 @@ export class XfceDesktopService {
       try {
         console.log(`[XFCE Desktop] Start attempt ${attempt}/${maxRetries}`);
 
-        // Ensure containerd is running
-        await this.ensureContainerdRunning();
+        // Verify Docker is fully operational before attempting to start container
+        if (!await this.verifyDockerOperational()) {
+          throw new Error('Docker is not fully operational yet');
+        }
 
         // Clean up any existing container
         await this.cleanup();
