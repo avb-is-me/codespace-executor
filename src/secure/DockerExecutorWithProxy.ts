@@ -74,6 +74,8 @@ export interface DockerProxyExecutorOptions {
     captureResponses?: boolean;  // Capture full response bodies
     onRequest?: RequestModifier;  // Modify requests before sending
     onResponse?: ResponseModifier;  // Modify responses before returning
+    filterSensitiveHeaders?: boolean;  // Remove sensitive headers from logs and responses (default: true)
+    sensitiveHeaders?: string[];  // Custom list of headers to filter (default: common sensitive headers)
 }
 
 export interface DockerProxyExecutionResult {
@@ -102,9 +104,27 @@ export default class DockerExecutorWithProxy {
         allowedDomains: string[];
         logTraffic: boolean;
         captureResponses: boolean;
+        filterSensitiveHeaders: boolean;
+        sensitiveHeaders: string[];
     };
     private proxyServer: http.Server | null = null;
     private networkLog: ProxyLog[] = [];
+
+    // Default list of sensitive headers to filter
+    private static readonly DEFAULT_SENSITIVE_HEADERS = [
+        'authorization',
+        'cookie',
+        'set-cookie',
+        'x-api-key',
+        'x-auth-token',
+        'x-csrf-token',
+        'x-xsrf-token',
+        'proxy-authorization',
+        'www-authenticate',
+        'x-amz-security-token',
+        'x-goog-iam-authorization-token',
+        'x-goog-authenticated-user-email'
+    ];
 
     constructor(config: DockerProxyExecutorOptions = {}) {
         this.docker = new Docker();
@@ -120,6 +140,8 @@ export default class DockerExecutorWithProxy {
             allowedDomains: config.allowedDomains || [],
             logTraffic: config.logTraffic !== false,
             captureResponses: config.captureResponses || false,
+            filterSensitiveHeaders: config.filterSensitiveHeaders !== false,  // Default: true
+            sensitiveHeaders: config.sensitiveHeaders || DockerExecutorWithProxy.DEFAULT_SENSITIVE_HEADERS,
             onRequest: config.onRequest,
             onResponse: config.onResponse
         };
@@ -127,6 +149,44 @@ export default class DockerExecutorWithProxy {
         if (!fs.existsSync(this.options.tempDir)) {
             fs.mkdirSync(this.options.tempDir, { recursive: true });
         }
+    }
+
+    /**
+     * Filter sensitive headers from a headers object (for logging - redacts values)
+     */
+    private filterSensitiveHeaders(headers: Record<string, any>): Record<string, any> {
+        if (!this.options.filterSensitiveHeaders) {
+            return headers;
+        }
+
+        const filtered: Record<string, any> = {};
+        const sensitiveHeadersLower = this.options.sensitiveHeaders.map(h => h.toLowerCase());
+
+        for (const [key, value] of Object.entries(headers)) {
+            if (sensitiveHeadersLower.includes(key.toLowerCase())) {
+                filtered[key] = '[REDACTED]';
+            } else {
+                filtered[key] = value;
+            }
+        }
+
+        return filtered;
+    }
+
+    /**
+     * Remove sensitive headers completely (for actual responses)
+     */
+    private removeHeaderValues(headers: Record<string, any>, headersToRemove: string[]): Record<string, any> {
+        const filtered: Record<string, any> = {};
+        const headersToRemoveLower = headersToRemove.map(h => h.toLowerCase());
+
+        for (const [key, value] of Object.entries(headers)) {
+            if (!headersToRemoveLower.includes(key.toLowerCase())) {
+                filtered[key] = value;
+            }
+        }
+
+        return filtered;
     }
 
     /**
@@ -228,7 +288,7 @@ export default class DockerExecutorWithProxy {
             method: clientReq.method!,
             url: clientReq.url!,
             hostname,
-            requestHeaders: { ...clientReq.headers },
+            requestHeaders: this.filterSensitiveHeaders({ ...clientReq.headers }),
             blocked: false
         };
 
@@ -277,7 +337,7 @@ export default class DockerExecutorWithProxy {
                     if (modification.mockResponse) {
                         console.log(`[Proxy] 🎭 MOCK RESPONSE for: ${hostname}`);
                         logEntry.statusCode = modification.mockResponse.statusCode;
-                        logEntry.responseHeaders = modification.mockResponse.headers || {};
+                        logEntry.responseHeaders = this.filterSensitiveHeaders(modification.mockResponse.headers || {});
 
                         if (this.options.captureResponses && modification.mockResponse.body) {
                             logEntry.responseBody = modification.mockResponse.body.substring(0, 1000);
@@ -368,7 +428,7 @@ export default class DockerExecutorWithProxy {
 
                 // Update log entry with final values
                 logEntry.statusCode = statusCode;
-                logEntry.responseHeaders = headers as any;
+                logEntry.responseHeaders = this.filterSensitiveHeaders(headers as any);
 
                 // Log response if enabled
                 if (this.options.captureResponses) {
@@ -381,8 +441,13 @@ export default class DockerExecutorWithProxy {
 
                 this.networkLog.push(logEntry);
 
+                // Filter sensitive headers from actual response if enabled
+                const filteredHeaders = this.options.filterSensitiveHeaders
+                    ? this.removeHeaderValues(headers, this.options.sensitiveHeaders)
+                    : headers;
+
                 // Send response to client
-                clientRes.writeHead(statusCode, headers);
+                clientRes.writeHead(statusCode, filteredHeaders);
                 clientRes.end(responseBody);
             });
         });
@@ -410,7 +475,7 @@ export default class DockerExecutorWithProxy {
             method: 'CONNECT',
             url: req.url!,
             hostname: hostname!,
-            requestHeaders: req.headers,
+            requestHeaders: this.filterSensitiveHeaders({ ...req.headers }),
             blocked: false
         };
 
