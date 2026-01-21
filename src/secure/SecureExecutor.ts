@@ -16,6 +16,7 @@ import {
     // ApiCalls - imported but not used in current implementation
 } from '../types';
 import LocalLLM from '../local_llm/local';
+import DockerExecutor from './DockerExecutor';
 
 export interface SecureExecutorOptions {
     timeout?: number;
@@ -49,6 +50,8 @@ export default class SecureExecutor {
     private maxDataMethodExecutionsPerHour: number;
     private maxDataMethods: number;
     private maxDataMethodTimeout: number;
+    private dockerExecutor: DockerExecutor | null = null;
+    private useDockerExecution: boolean;
 
     constructor(options: SecureExecutorOptions = {}) {
         this.defaultTimeout = options.timeout || 30000;
@@ -56,6 +59,22 @@ export default class SecureExecutor {
         this.maxDataMethodExecutionsPerHour = options.maxDataMethodExecutionsPerHour || 100;
         this.maxDataMethods = options.maxDataMethods || 10;
         this.maxDataMethodTimeout = options.maxDataMethodTimeout || 15000;
+
+        // Check if Docker execution is enabled via environment variable
+        this.useDockerExecution = process.env.DOCKER_EXECUTOR === 'true';
+
+        // Initialize Docker executor if enabled
+        if (this.useDockerExecution) {
+            console.log('[SecureExecutor] Docker execution enabled via DOCKER_EXECUTOR=true');
+            this.dockerExecutor = new DockerExecutor({
+                networkMode: 'none',  // Complete network isolation
+                timeout: this.defaultTimeout,
+                memoryLimit: 512 * 1024 * 1024,  // 512MB
+                tempDir: this.tempDir
+            });
+        } else {
+            console.log('[SecureExecutor] Using standard spawn-based execution (set DOCKER_EXECUTOR=true to use Docker)');
+        }
 
         // Ensure temp directory exists
         if (!fs.existsSync(this.tempDir)) {
@@ -339,8 +358,15 @@ export default class SecureExecutor {
 
     /**
      * Execute process with enhanced security monitoring
+     * Automatically uses Docker if DOCKER_EXECUTOR=true
      */
     async executeProcess(cmd: string, args: string[], options: ProcessOptions = {}): Promise<ExecutionResult> {
+        // If Docker execution is enabled, use Docker instead of spawn
+        if (this.useDockerExecution && this.dockerExecutor) {
+            return this.executeProcessWithDocker(cmd, args, options);
+        }
+
+        // Fall back to spawn-based execution
         return new Promise((resolve, reject) => {
             const child = spawn(cmd, args, { env: options.env || {} });
             let stdout = '';
@@ -439,6 +465,83 @@ export default class SecureExecutor {
                 }
             });
         });
+    }
+
+    /**
+     * Execute process using Docker with network isolation
+     */
+    private async executeProcessWithDocker(cmd: string, args: string[], options: ProcessOptions = {}): Promise<ExecutionResult> {
+        try {
+            // Extract the script path from args (args[0] is the temp file path)
+            const scriptPath = args[0];
+
+            // Read the code from the temp file
+            const code = fs.readFileSync(scriptPath, 'utf8');
+
+            // Convert NodeJS.ProcessEnv to Record<string, string> for Docker
+            const env: Record<string, string> = {};
+            if (options.env) {
+                Object.keys(options.env).forEach(key => {
+                    const value = options.env![key];
+                    if (value !== undefined) {
+                        env[key] = value;
+                    }
+                });
+            }
+
+            // Execute in Docker with the same environment variables
+            const dockerResult = await this.dockerExecutor!.executeCode(code, env);
+
+            // Convert Docker result to ExecutionResult format
+            const result: ExecutionResult = {
+                success: dockerResult.success,
+                data: {
+                    stdout: (options.executionMode === 'secure' ||
+                        options.executionMode === 'isolated-data-variable' ||
+                        options.executionMode === 'isolated-data-method' ||
+                        options.skipOutputSanitization) ?
+                        dockerResult.output : this.sanitizeOutput(dockerResult.output),
+                    stderr: (options.executionMode === 'secure' ||
+                        options.executionMode === 'isolated-data-variable' ||
+                        options.executionMode === 'isolated-data-method' ||
+                        options.skipOutputSanitization) ?
+                        dockerResult.error : this.sanitizeOutput(dockerResult.error),
+                    code: dockerResult.exitCode,
+                    executionTime: dockerResult.executionTime,
+                    executionMode: options.executionMode || 'docker',
+                    dockerInfo: {
+                        containerInfo: dockerResult.containerInfo,
+                        networkIsolation: true
+                    }
+                }
+            };
+
+            // AI analysis if requested
+            if (options.ai_eval) {
+                try {
+                    const localLLM = new LocalLLM();
+                    const outputsOfCodeExecution = `
+                    output of code execution:
+                    <stdout>${this.sanitizeOutput(dockerResult.output)}</stdout>
+                    <stderr>${this.sanitizeOutput(dockerResult.error)}</stderr>`;
+                    result.data!.aiAnalysis = await localLLM.analyzeResponse(JSON.stringify(outputsOfCodeExecution));
+                } catch (e) {
+                    result.data!.aiAnalysis = { error: 'AI analysis failed' };
+                }
+            }
+
+            return result;
+
+        } catch (error: any) {
+            return {
+                success: false,
+                error: {
+                    message: error.message || 'Docker execution failed',
+                    type: 'docker_execution_error',
+                    details: error.toString()
+                }
+            };
+        }
     }
 
     /**
