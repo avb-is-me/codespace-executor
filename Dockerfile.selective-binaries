@@ -1,0 +1,82 @@
+# Custom Docker Image with Selective Binaries
+#
+# This Dockerfile shows how to:
+# 1. Include ONLY whitelisted binaries (ffmpeg, imagemagick, etc.)
+# 2. Block everything else (Python, curl, shell)
+# 3. Keep Node.js + your chosen utilities
+
+# ==============================================================================
+# Stage 1: Build stage with package manager (to install what we need)
+# ==============================================================================
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Install ONLY the binaries you whitelist
+# Examples: ffmpeg, imagemagick, ghostscript, poppler (pdf tools)
+RUN apk add --no-cache \
+    ffmpeg \
+    imagemagick \
+    ghostscript \
+    poppler-utils
+
+# Install npm packages you want
+RUN npm install --omit=dev \
+    stripe \
+    axios \
+    lodash \
+    sharp \
+    pdf-lib
+
+# ==============================================================================
+# Stage 2: Final distroless image with ONLY whitelisted binaries
+# ==============================================================================
+FROM gcr.io/distroless/nodejs20-debian12
+
+# Copy Node.js packages from builder
+COPY --from=builder /app/node_modules /app/node_modules
+
+# Copy ONLY whitelisted binaries (not everything!)
+COPY --from=builder /usr/bin/ffmpeg /usr/local/bin/ffmpeg
+COPY --from=builder /usr/bin/ffprobe /usr/local/bin/ffprobe
+COPY --from=builder /usr/bin/convert /usr/local/bin/convert
+COPY --from=builder /usr/bin/identify /usr/local/bin/identify
+COPY --from=builder /usr/bin/pdftoppm /usr/local/bin/pdftoppm
+
+# Copy required libraries for the binaries
+COPY --from=builder /usr/lib /usr/lib
+COPY --from=builder /lib /lib
+
+# Set environment
+ENV NODE_PATH=/app/node_modules
+ENV PATH=/usr/local/bin:/nodejs/bin:$PATH
+
+# Result:
+# ✅ Node.js runtime
+# ✅ ffmpeg (whitelisted)
+# ✅ imagemagick (whitelisted)
+# ✅ PDF tools (whitelisted)
+# ✅ npm packages
+# ❌ Python (blocked)
+# ❌ curl (blocked)
+# ❌ wget (blocked)
+# ❌ Shell (blocked)
+# ❌ Package managers (blocked)
+
+# ==============================================================================
+# Alternative: More minimal approach (smaller image)
+# ==============================================================================
+
+# FROM gcr.io/distroless/nodejs20-debian12
+#
+# # Copy only the specific binaries you need
+# COPY --from=builder /usr/bin/ffmpeg /usr/local/bin/ffmpeg
+# COPY --from=builder /usr/bin/ffprobe /usr/local/bin/ffprobe
+#
+# # Copy only required shared libraries (minimal)
+# COPY --from=builder /usr/lib/libavcodec.so* /usr/lib/
+# COPY --from=builder /usr/lib/libavformat.so* /usr/lib/
+# COPY --from=builder /usr/lib/libavutil.so* /usr/lib/
+# # ... add other required libs only
+#
+# # This creates the smallest possible image with only what you need
