@@ -1,0 +1,178 @@
+# Kubernetes deployment with sidecar proxy for network control
+# This shows how to run the proxy alongside code execution pods
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-config
+data:
+  config.json: |
+    {
+      "port": 8888,
+      "blockedDomains": [
+        "api.stripe.com",
+        "checkout.stripe.com",
+        "js.stripe.com"
+      ],
+      "logRequests": true,
+      "mockResponses": {
+        "api.stripe.com": {
+          "error": "Stripe API calls are not allowed",
+          "mock": true
+        }
+      }
+    }
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: code-executor
+spec:
+  selector:
+    app: code-executor
+  ports:
+  - name: http
+    port: 3000
+    targetPort: 3000
+  - name: ws
+    port: 4002
+    targetPort: 4002
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: code-executor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: code-executor
+  template:
+    metadata:
+      labels:
+        app: code-executor
+    spec:
+      # Share network namespace between containers (sidecar pattern)
+      shareProcessNamespace: true
+
+      containers:
+      # Main application container
+      - name: executor
+        image: your-registry/codespace-executor:latest
+        ports:
+        - containerPort: 3000
+        - containerPort: 4002
+        env:
+        # Force all HTTP/HTTPS through proxy
+        - name: HTTP_PROXY
+          value: "http://localhost:8888"
+        - name: HTTPS_PROXY
+          value: "http://localhost:8888"
+        - name: NO_PROXY
+          value: "localhost,127.0.0.1,.svc.cluster.local"
+        resources:
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+
+      # Sidecar proxy container
+      - name: network-proxy
+        image: node:20-alpine
+        command:
+        - node
+        - /app/network-proxy.js
+        ports:
+        - containerPort: 8888
+        volumeMounts:
+        - name: proxy-code
+          mountPath: /app
+        - name: proxy-config
+          mountPath: /config
+        resources:
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+        # Health check
+        livenessProbe:
+          tcpSocket:
+            port: 8888
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+      volumes:
+      - name: proxy-code
+        configMap:
+          name: proxy-code
+      - name: proxy-config
+        configMap:
+          name: proxy-config
+
+---
+# Alternative: Using Istio Service Mesh for more advanced control
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: block-stripe-egress
+spec:
+  selector:
+    matchLabels:
+      app: code-executor
+  action: DENY
+  rules:
+  - to:
+    - operation:
+        hosts:
+        - "api.stripe.com"
+        - "*.stripe.com"
+        ports:
+        - "443"
+        - "80"
+
+---
+# EnvoyFilter for response modification (if using Istio)
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: modify-responses
+spec:
+  workloadSelector:
+    labels:
+      app: code-executor
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_OUTBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.lua
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+          inline_code: |
+            function envoy_on_response(response_handle)
+              -- Log response
+              local headers = response_handle:headers()
+              local host = headers:get(":authority")
+
+              -- Modify response body
+              local body = response_handle:body():getBytes(0, response_handle:body():length())
+
+              -- Add custom header
+              response_handle:headers():add("X-Proxy-Modified", "true")
+
+              -- Could modify body here if needed
+              -- response_handle:body():setBytes(modified_body)
+            end
