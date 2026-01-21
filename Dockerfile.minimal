@@ -1,0 +1,50 @@
+# Minimal Node.js Docker Image - ONLY Node.js, nothing else
+#
+# This Dockerfile creates an image with:
+# - Node.js runtime only
+# - No Python
+# - No curl/wget
+# - No shell (optional)
+# - No package managers
+
+# Option 1: Start from distroless (most secure)
+FROM gcr.io/distroless/nodejs20-debian12
+
+# That's it! Nothing else needed. Image contains ONLY Node.js.
+
+# ============================================================================
+
+# Option 2: Start from Alpine and remove everything
+# Uncomment this section if you need a shell for debugging:
+
+# FROM node:20-alpine
+#
+# # Remove package manager to prevent installing more tools
+# RUN apk del apk-tools --purge
+#
+# # Remove any Python installations
+# RUN rm -rf /usr/bin/python* /usr/lib/python* || true
+#
+# # Remove network tools
+# RUN rm -rf /usr/bin/curl /usr/bin/wget /usr/bin/nc /usr/bin/telnet || true
+#
+# # Remove compilers
+# RUN rm -rf /usr/bin/gcc /usr/bin/g++ /usr/bin/make || true
+#
+# # Optional: Remove shell (makes it like distroless)
+# # RUN rm -rf /bin/sh /bin/bash || true
+#
+# # Only Node.js and npm remain
+
+# ============================================================================
+
+# Option 3: Scratch + Node.js binary (smallest possible)
+# Most advanced option - build from scratch
+
+# FROM scratch
+# COPY --from=node:20-alpine /usr/local/bin/node /usr/local/bin/node
+# COPY --from=node:20-alpine /usr/lib /usr/lib
+#
+# # This creates an image with ONLY the Node.js binary
+# # Size: ~40-50 MB
+# # Security: Maximum (no OS, no tools, just Node.js)
