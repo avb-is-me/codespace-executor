@@ -46,7 +46,7 @@ export default class SecureExecutorUnified {
         // Auto-detect mode from environment variables
         const dockerEnabled = process.env.DOCKER_EXECUTOR === 'true';
         const proxyEnabled = process.env.ENABLE_HTTP_PROXY === 'true';
-        const policyEnabled = process.env.ENABLE_POLICY === 'true';
+        const policyEnabled = process.env.ENABLE_POLICY === 'true' || !!options.policy;
 
         // Override with explicit mode
         this.mode = options.mode || this.detectMode(dockerEnabled, proxyEnabled, policyEnabled);
