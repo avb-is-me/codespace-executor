@@ -1,0 +1,369 @@
+{
+  "info": {
+    "name": "Code Execution with JWT Policies",
+    "description": "Test code execution endpoint with user-specific security policies",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "jwt_token",
+      "value": "your-jwt-token-here"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Basic Tests",
+      "item": [
+        {
+          "name": "Simple axios GET",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const axios = require('axios'); axios.get('https://api.stripe.com/v1/products').then(res => console.log('Status:', res.status)).catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "axios with Headers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const axios = require('axios'); axios.get('https://api.stripe.com/v1/products', { headers: { 'User-Agent': 'TestApp/1.0' } }).then(res => { console.log('Status:', res.status); console.log('Products:', res.data.data?.length || 0); }).catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "axios POST Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const axios = require('axios'); axios.post('https://api.stripe.com/v1/products', { name: 'Test Product' }).then(res => console.log('Created:', res.data.id)).catch(err => console.error('Error:', err.response?.status, err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Policy Enforcement",
+      "item": [
+        {
+          "name": "✅ Allowed: Stripe API",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const axios = require('axios'); console.log('Testing Stripe API...'); axios.get('https://api.stripe.com/v1/products').then(res => console.log('✅ Success! Status:', res.status)).catch(err => console.error('❌ Failed:', err.response?.status, err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "✅ Allowed: Okta GET",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const axios = require('axios'); console.log('Testing Okta GET...'); axios.get('https://dev-123.okta.com/api/v1/users').then(res => console.log('✅ Allowed! Status:', res.status)).catch(err => console.error('Response:', err.response?.status, err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "🚫 Blocked: Okta DELETE",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const axios = require('axios'); console.log('Testing Okta DELETE (should be blocked)...'); axios.delete('https://dev-123.okta.com/api/v1/users/123').then(res => console.log('Unexpected success:', res.status)).catch(err => console.log('🚫 Blocked as expected! Status:', err.response?.status, 'Message:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "🚫 Blocked: GitHub (not in allowlist)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const axios = require('axios'); console.log('Testing GitHub API (should be blocked)...'); axios.get('https://api.github.com/users/github').then(res => console.log('Unexpected success:', res.status)).catch(err => console.log('🚫 Blocked as expected! Status:', err.response?.status, 'Domain not in allowlist'));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Real SDK Tests",
+      "item": [
+        {
+          "name": "Stripe SDK",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              },
+              {
+                "key": "x-keyboard-provider-user-token-for-stripe",
+                "value": "sk_test_your_stripe_key_here"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const stripe = require('stripe')(process.env.KEYBOARD_PROVIDER_USER_TOKEN_FOR_STRIPE); console.log('Fetching Stripe products...'); stripe.products.list({ limit: 3 }).then(products => { console.log('Found', products.data.length, 'products'); products.data.forEach(p => console.log('-', p.name)); }).catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "Native HTTPS Module",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const https = require('https'); console.log('Making HTTPS request...'); https.get('https://api.stripe.com/v1/products', (res) => { console.log('Status:', res.statusCode); let data = ''; res.on('data', chunk => data += chunk); res.on('end', () => console.log('Received', data.length, 'bytes')); }).on('error', err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Advanced Tests",
+      "item": [
+        {
+          "name": "Multiple Sequential Requests",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const axios = require('axios');\\n\\nasync function test() {\\n  try {\\n    console.log('Test 1: Stripe API');\\n    const stripe = await axios.get('https://api.stripe.com/v1/products');\\n    console.log('✅ Stripe:', stripe.status);\\n    \\n    console.log('\\\\nTest 2: Okta API');\\n    const okta = await axios.get('https://dev-123.okta.com/api/v1/users');\\n    console.log('✅ Okta:', okta.status);\\n    \\n  } catch (err) {\\n    console.error('❌ Error:', err.message);\\n  }\\n}\\n\\ntest();\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "Test All Policy Rules",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const axios = require('axios');\\n\\nasync function testAllPolicies() {\\n  console.log('🧪 Testing All Policy Rules\\\\n');\\n  \\n  const tests = [\\n    { name: 'Stripe GET', url: 'https://api.stripe.com/v1/products', method: 'get', expected: 'allowed' },\\n    { name: 'Okta GET', url: 'https://dev-123.okta.com/api/v1/users', method: 'get', expected: 'allowed' },\\n    { name: 'Okta DELETE', url: 'https://dev-123.okta.com/api/v1/users/123', method: 'delete', expected: 'blocked' },\\n    { name: 'GitHub GET', url: 'https://api.github.com/users/github', method: 'get', expected: 'blocked' }\\n  ];\\n\\n  for (const test of tests) {\\n    try {\\n      const res = await axios[test.method](test.url);\\n      console.log(`✅ ${test.name}: ${res.status} (Expected: ${test.expected})`);\\n    } catch (err) {\\n      const status = err.response?.status || 'ERROR';\\n      console.log(`🚫 ${test.name}: ${status} (Expected: ${test.expected})`);\\n    }\\n  }\\n  \\n  console.log('\\\\n✅ Policy test complete!');\\n}\\n\\ntestAllPolicies();\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "Error Handling Test",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const axios = require('axios');\\n\\nasync function testErrors() {\\n  console.log('Testing error handling...\\\\n');\\n  \\n  try {\\n    await axios.get('https://blocked-domain.com/api');\\n    console.log('Should not reach here');\\n  } catch (err) {\\n    console.log('Caught error (expected)');\\n    console.log('Status:', err.response?.status);\\n    console.log('Message:', err.message);\\n  }\\n  \\n  console.log('\\\\nError handling works correctly!');\\n}\\n\\ntestErrors();\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Without JWT (Default Policy)",
+      "item": [
+        {
+          "name": "Test Without Authorization Header",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const axios = require('axios'); console.log('Testing without JWT (using default policy)...'); axios.get('https://api.stripe.com/v1/products').then(res => console.log('Status:', res.status)).catch(err => console.error('Error:', err.response?.status, err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
