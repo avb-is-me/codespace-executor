@@ -1,0 +1,369 @@
+{
+  "info": {
+    "name": "Code Execution with JWT Policies (fetch)",
+    "description": "Test code execution endpoint with user-specific security policies using native fetch()",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "jwt_token",
+      "value": "your-jwt-token-here"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Basic fetch Tests",
+      "item": [
+        {
+          "name": "Simple fetch GET",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"fetch('https://api.stripe.com/v1/products').then(res => { console.log('Status:', res.status); return res.json(); }).then(data => console.log('Products:', data.data?.length || 0)).catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "fetch with Headers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"fetch('https://api.stripe.com/v1/products', { headers: { 'User-Agent': 'TestApp/1.0' } }).then(res => { console.log('Status:', res.status); console.log('OK:', res.ok); return res.json(); }).then(data => console.log('Products:', data.data?.length || 0)).catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "fetch POST Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"fetch('https://api.stripe.com/v1/products', { method: 'POST', headers: { 'Authorization': 'Bearer sk_test_key', 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'name=Test Product&description=Created from fetch' }).then(res => { console.log('Status:', res.status); return res.json(); }).then(data => console.log('Created:', data.id)).catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Policy Enforcement Tests",
+      "item": [
+        {
+          "name": "✅ Allowed: Stripe API",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"console.log('Testing Stripe API...');\\n\\nfetch('https://api.stripe.com/v1/products')\\n  .then(res => {\\n    if (res.ok) {\\n      console.log('✅ Success! Status:', res.status);\\n    } else {\\n      console.log('🚫 Blocked! Status:', res.status);\\n    }\\n    return res.json();\\n  })\\n  .then(data => console.log('Data received'))\\n  .catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "✅ Allowed: Okta GET",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"console.log('Testing Okta GET...');\\n\\nfetch('https://dev-123.okta.com/api/v1/users', { method: 'GET' })\\n  .then(res => {\\n    if (res.ok) {\\n      console.log('✅ Allowed! Status:', res.status);\\n    } else if (res.status === 403) {\\n      console.log('🚫 Blocked! Status:', res.status);\\n    } else {\\n      console.log('Response:', res.status);\\n    }\\n  })\\n  .catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "🚫 Blocked: Okta DELETE",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"console.log('Testing Okta DELETE (should be blocked)...');\\n\\nfetch('https://dev-123.okta.com/api/v1/users/123', { method: 'DELETE' })\\n  .then(res => {\\n    if (res.status === 403) {\\n      console.log('🚫 Blocked as expected! Status:', res.status);\\n      console.log('Method DELETE not allowed by policy');\\n    } else if (res.ok) {\\n      console.log('✅ Unexpected success:', res.status);\\n    } else {\\n      console.log('Response:', res.status);\\n    }\\n  })\\n  .catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "🚫 Blocked: GitHub (not in allowlist)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"console.log('Testing GitHub API (should be blocked)...');\\n\\nfetch('https://api.github.com/users/github')\\n  .then(res => {\\n    if (res.status === 403) {\\n      console.log('🚫 Blocked as expected! Status:', res.status);\\n      console.log('Domain api.github.com not in allowlist');\\n    } else if (res.ok) {\\n      console.log('✅ Unexpected success:', res.status);\\n    } else {\\n      console.log('Response:', res.status);\\n    }\\n  })\\n  .catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Advanced fetch Tests",
+      "item": [
+        {
+          "name": "Multiple Sequential Requests",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"async function testMultiple() {\\n  console.log('Testing multiple API calls...\\\\n');\\n\\n  // Test 1: Stripe\\n  console.log('1. Fetching Stripe...');\\n  try {\\n    const res1 = await fetch('https://api.stripe.com/v1/products');\\n    console.log('   ✅ Stripe:', res1.status);\\n  } catch (err) {\\n    console.log('   ❌ Stripe:', err.message);\\n  }\\n\\n  // Test 2: Okta\\n  console.log('\\\\n2. Fetching Okta...');\\n  try {\\n    const res2 = await fetch('https://dev-123.okta.com/api/v1/users');\\n    console.log('   ✅ Okta:', res2.status);\\n  } catch (err) {\\n    console.log('   ❌ Okta:', err.message);\\n  }\\n\\n  // Test 3: GitHub\\n  console.log('\\\\n3. Fetching GitHub...');\\n  try {\\n    const res3 = await fetch('https://api.github.com/users/github');\\n    if (res3.status === 403) {\\n      console.log('   🚫 GitHub: Blocked (403)');\\n    } else {\\n      console.log('   ✅ GitHub:', res3.status);\\n    }\\n  } catch (err) {\\n    console.log('   ❌ GitHub:', err.message);\\n  }\\n\\n  console.log('\\\\n✅ Test complete!');\\n}\\n\\ntestMultiple();\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "Complete Policy Test Suite",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"async function testAllPolicies() {\\n  console.log('🧪 Policy Test Suite\\\\n');\\n  console.log('='.repeat(50));\\n\\n  const tests = [\\n    { name: 'Stripe GET', url: 'https://api.stripe.com/v1/products', method: 'GET', expectBlocked: false },\\n    { name: 'Okta GET', url: 'https://dev-123.okta.com/api/v1/users', method: 'GET', expectBlocked: false },\\n    { name: 'Okta DELETE', url: 'https://dev-123.okta.com/api/v1/users/123', method: 'DELETE', expectBlocked: true },\\n    { name: 'GitHub GET', url: 'https://api.github.com/users/github', method: 'GET', expectBlocked: true }\\n  ];\\n\\n  for (const test of tests) {\\n    try {\\n      const res = await fetch(test.url, { method: test.method });\\n      const blocked = res.status === 403;\\n      const pass = blocked === test.expectBlocked;\\n\\n      if (pass) {\\n        console.log(`✅ PASS: ${test.name} - Status ${res.status}`);\\n      } else {\\n        console.log(`❌ FAIL: ${test.name} - Status ${res.status} (expected ${test.expectBlocked ? 'blocked' : 'allowed'})`);\\n      }\\n    } catch (err) {\\n      console.log(`❌ ERROR: ${test.name} - ${err.message}`);\\n    }\\n  }\\n\\n  console.log('\\\\n' + '='.repeat(50));\\n  console.log('✅ Test suite complete!');\\n}\\n\\ntestAllPolicies();\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "Parallel Requests with Promise.all",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"async function fetchParallel() {\\n  console.log('Fetching multiple URLs in parallel...\\\\n');\\n\\n  const urls = [\\n    'https://api.stripe.com/v1/products',\\n    'https://dev-123.okta.com/api/v1/users',\\n    'https://api.github.com/users/github'\\n  ];\\n\\n  const results = await Promise.all(\\n    urls.map(url => \\n      fetch(url)\\n        .then(res => ({ url, status: res.status, ok: res.ok }))\\n        .catch(err => ({ url, error: err.message }))\\n    )\\n  );\\n\\n  results.forEach(result => {\\n    if (result.error) {\\n      console.log(`❌ ${result.url}: ${result.error}`);\\n    } else if (result.status === 403) {\\n      console.log(`🚫 ${result.url}: ${result.status} (blocked)`);\\n    } else {\\n      console.log(`✅ ${result.url}: ${result.status}`);\\n    }\\n  });\\n\\n  console.log('\\\\n✅ All requests completed!');\\n}\\n\\nfetchParallel();\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Stripe API Examples",
+      "item": [
+        {
+          "name": "List Stripe Products",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              },
+              {
+                "key": "x-keyboard-provider-user-token-for-stripe",
+                "value": "sk_test_your_stripe_key_here"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"const apiKey = process.env.KEYBOARD_PROVIDER_USER_TOKEN_FOR_STRIPE;\\nconsole.log('API Key available:', !!apiKey);\\n\\nfetch('https://api.stripe.com/v1/products?limit=5', {\\n  headers: {\\n    'Authorization': `Bearer ${apiKey}`\\n  }\\n})\\n  .then(res => {\\n    console.log('Status:', res.status);\\n    return res.json();\\n  })\\n  .then(data => {\\n    console.log(`Found ${data.data.length} products:`);\\n    data.data.forEach((p, i) => {\\n      console.log(`${i + 1}. ${p.name} (${p.id})`);\\n    });\\n  })\\n  .catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        },
+        {
+          "name": "Check Response Headers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"fetch('https://api.stripe.com/v1/products')\\n  .then(res => {\\n    console.log('Status:', res.status, res.statusText);\\n    console.log('\\\\nKey Response Headers:');\\n    console.log('Content-Type:', res.headers.get('content-type'));\\n    console.log('X-Request-Id:', res.headers.get('x-request-id'));\\n    console.log('Stripe-Version:', res.headers.get('stripe-version'));\\n    return res.json();\\n  })\\n  .then(data => console.log('\\\\nData keys:', Object.keys(data)))\\n  .catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Without JWT (Default Policy)",
+      "item": [
+        {
+          "name": "Test Without Authorization",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"console.log('Testing without JWT (using default policy)...');\\n\\nfetch('https://api.stripe.com/v1/products')\\n  .then(res => {\\n    if (res.status === 403) {\\n      console.log('🚫 Blocked by default policy');\\n    } else {\\n      console.log('✅ Allowed by default policy');\\n    }\\n    console.log('Status:', res.status);\\n  })\\n  .catch(err => console.error('Error:', err.message));\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/execute",
+              "host": ["{{baseUrl}}"],
+              "path": ["execute"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
