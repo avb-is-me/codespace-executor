@@ -1,7 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import { generateKeyPair } from './utils/asymmetric-crypto.js';
-import { XfceDesktopService, isXfceDesktopEnabled, XfceDesktopConfig } from './services/xfce-desktop.js';
 
 interface ServiceConfig {
   name: string;
@@ -21,7 +20,6 @@ interface ServiceProcess {
 export class ServiceBootstrap {
   private services: ServiceProcess[] = [];
   private readonly projectRoot: string;
-  private xfceDesktop: XfceDesktopService | null = null;
 
   constructor() {
     // Get project root (parent directory of dist/src)
@@ -58,40 +56,7 @@ export class ServiceBootstrap {
       await this.startService(serviceConfig);
     }
 
-    // Start XFCE Desktop if enabled
-    await this.startXfceDesktop();
-  }
-
-  /**
-   * Start XFCE Desktop container if enabled
-   */
-  private async startXfceDesktop(): Promise<void> {
-    if (!isXfceDesktopEnabled()) {
-      return;
-    }
-
-    console.log('[ServiceBootstrap] XFCE Desktop is enabled, starting...');
-
-    try {
-      // Get configuration from environment variables
-      const config: XfceDesktopConfig = {
-        webPort: parseInt(process.env.XFCE_WEB_PORT || '3001', 10),
-        vncPort: parseInt(process.env.XFCE_VNC_PORT || '3002', 10),
-        enableChrome: process.env.XFCE_INSTALL_CHROME === 'true',
-        timezone: process.env.TZ || 'America/New_York',
-      };
-
-      this.xfceDesktop = new XfceDesktopService(config);
-      const status = await this.xfceDesktop.start();
-
-      if (status.running) {
-        console.log(`[ServiceBootstrap] XFCE Desktop started on port ${status.webPort}`);
-      } else {
-        console.error(`[ServiceBootstrap] XFCE Desktop failed to start: ${status.error}`);
-      }
-    } catch (error: any) {
-      console.error(`[ServiceBootstrap] XFCE Desktop error: ${error.message}`);
-    }
+    
   }
 
   /**
@@ -171,42 +136,17 @@ export class ServiceBootstrap {
    * Get status of all services
    */
   getServicesStatus(): { name: string; status: string }[] {
-    const statuses = this.services.map(service => ({
+    return this.services.map(service => ({
       name: service.name,
       status: service.status,
     }));
-
-    // Add XFCE Desktop status if enabled
-    if (this.xfceDesktop) {
-      statuses.push({
-        name: 'XFCE Desktop',
-        status: 'running', // Will be updated by async check if needed
-      });
-    }
-
-    return statuses;
-  }
-
-  /**
-   * Get XFCE Desktop service instance (if enabled)
-   */
-  getXfceDesktop(): XfceDesktopService | null {
-    return this.xfceDesktop;
   }
 
   /**
    * Shutdown all services gracefully
    */
   async shutdown(): Promise<void> {
-    // Stop XFCE Desktop container if running
-    if (this.xfceDesktop) {
-      try {
-        console.log('[ServiceBootstrap] Stopping XFCE Desktop...');
-        await this.xfceDesktop.stop();
-      } catch (error: any) {
-        console.error(`[ServiceBootstrap] Failed to stop XFCE Desktop: ${error.message}`);
-      }
-    }
+    
 
     for (const service of this.services) {
       if (service.status === 'running' || service.status === 'starting') {
