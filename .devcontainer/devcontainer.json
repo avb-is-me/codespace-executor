@@ -1,7 +1,7 @@
 {
     "postCreateCommand": "npm install",
     "postStartCommand": "npm run dev",
-    "forwardPorts": [3000, 3001, 3002, 11434, 4, 5001, 5002],
+    "forwardPorts": [3000, 3001, 3002, 11434, 4002, 5001, 5002],
     "portsAttributes": {
         "3000": {
             "label": "HTTP Server"
