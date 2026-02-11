@@ -17,6 +17,7 @@ import LocalLLM from './local_llm/local.js';
 import JobManager from './jobs/JobManager.js';
 import SecureExecutor from './secure/SecureExecutor.js';
 import { bootUpServices, ServiceBootstrap } from './boot-up-services.js';
+import { analyzePII, anonymizePII, redactPII } from './redaction/index.js';
 
 // Import types
 import {
@@ -1015,6 +1016,67 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
             }));
         }
         
+    // Redaction routes (only available when REDACTION=true)
+    } else if (process.env.REDACTION === 'true' && pathname === '/redaction/analyze' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const { text, language } = JSON.parse(body);
+                if (!text) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: 'Missing required field: text' }));
+                    return;
+                }
+                const results = await analyzePII(text, language);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, results }));
+            } catch (error: any) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: error.message }));
+            }
+        });
+
+    } else if (process.env.REDACTION === 'true' && pathname === '/redaction/anonymize' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const { text, analyzer_results, anonymizers } = JSON.parse(body);
+                if (!text || !analyzer_results) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: 'Missing required fields: text, analyzer_results' }));
+                    return;
+                }
+                const result = await anonymizePII(text, analyzer_results, anonymizers);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, ...result }));
+            } catch (error: any) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: error.message }));
+            }
+        });
+
+    } else if (process.env.REDACTION === 'true' && pathname === '/redaction/redact' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const { text, language, anonymizers } = JSON.parse(body);
+                if (!text) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: 'Missing required field: text' }));
+                    return;
+                }
+                const result = await redactPII(text, language, anonymizers);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, ...result }));
+            } catch (error: any) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: error.message }));
+            }
+        });
+
     } else {
         res.writeHead(404);
         res.end('Not found');
