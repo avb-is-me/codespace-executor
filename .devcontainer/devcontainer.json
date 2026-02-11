@@ -1,7 +1,7 @@
 {
     "postCreateCommand": "npm install",
     "postStartCommand": "npm run dev",
-    "forwardPorts": [3000, 3001, 3002, 11434, 4002],
+    "forwardPorts": [3000, 3001, 3002, 11434, 4002, 5001, 5002],
     "portsAttributes": {
         "3000": {
             "label": "HTTP Server"
@@ -14,6 +14,12 @@
         },
         "4002": {
             "label": "WebSocket Server"
+        },
+        "5001": {
+            "label": "Presidio Analyzer"
+        },
+        "5002": {
+            "label": "Presidio Anonymizer"
         },
         "11434": {
             "label": "Ollama API"
