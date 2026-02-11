@@ -27,10 +27,75 @@ export class ServiceBootstrap {
   }
 
   /**
+   * Start Presidio Docker containers if REDACTION=true
+   */
+  private async startPresidioContainers(): Promise<void> {
+    if (process.env.REDACTION !== 'true') {
+      return;
+    }
+
+    const containers = [
+      { name: 'presidio-analyzer', port: 5001, image: 'mcr.microsoft.com/presidio-analyzer:latest' },
+      { name: 'presidio-anonymizer', port: 5002, image: 'mcr.microsoft.com/presidio-anonymizer:latest' },
+    ];
+
+    for (const container of containers) {
+      try {
+        // Stop and remove existing container if it exists (ignore errors)
+        await new Promise<void>((resolve) => {
+          const stopProcess = spawn('docker', ['stop', container.name], { stdio: 'ignore' });
+          stopProcess.on('close', () => {
+            const rmProcess = spawn('docker', ['rm', container.name], { stdio: 'ignore' });
+            rmProcess.on('close', () => resolve());
+          });
+          // Timeout after 2 seconds
+          setTimeout(() => resolve(), 2000);
+        });
+
+        // Start new container
+        const startProcess = spawn('docker', [
+          'run', '-d',
+          '--name', container.name,
+          '-p', `${container.port}:3000`,
+          container.image
+        ], { stdio: 'pipe' });
+
+        startProcess.on('error', (error) => {
+          console.error(`⚠️  Failed to start ${container.name}:`, error.message);
+          console.error('⚠️  Redaction endpoints will not be available');
+        });
+
+        // Wait a moment before starting next container
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+      } catch (error: any) {
+        console.error(`⚠️  Error with ${container.name}:`, error.message);
+        console.error('⚠️  Server will continue without this service');
+      }
+    }
+
+    // Verify containers are running
+    setTimeout(() => {
+      for (const container of containers) {
+        const checkProcess = spawn('docker', ['ps', '--filter', `name=${container.name}`, '--format', '{{.Names}}'], { stdio: 'pipe' });
+        let output = '';
+        checkProcess.stdout?.on('data', (data) => {
+          output += data.toString();
+        });
+        checkProcess.on('close', () => {
+          if (output.includes(container.name)) {
+            console.log(`✅ ${container.name} is running on port ${container.port}`);
+          }
+        });
+      }
+    }, 2000);
+  }
+
+  /**
    * Boot up all configured services
    */
   async bootUpServices(): Promise<void> {
-    
+
 
     // Generate RSA key pair on boot
     try {
@@ -39,6 +104,12 @@ export class ServiceBootstrap {
       console.error('❌ Failed to generate encryption key pair:', error.message);
       console.error('⚠️  Server will continue without asymmetric encryption support');
     }
+
+    // Start Presidio containers (non-blocking, failures don't stop server)
+    this.startPresidioContainers().catch((error) => {
+      console.error('⚠️  Presidio startup encountered an error:', error.message);
+      console.error('⚠️  Server will continue without Presidio services');
+    });
 
     const services: ServiceConfig[] = [
       // WebSocket server
@@ -146,16 +217,32 @@ export class ServiceBootstrap {
    * Shutdown all services gracefully
    */
   async shutdown(): Promise<void> {
-    
+
 
     for (const service of this.services) {
       if (service.status === 'running' || service.status === 'starting') {
-        
+
         try {
           service.process.kill('SIGTERM');
           service.status = 'stopped';
         } catch (error: any) {
           console.error(`  Failed to stop ${service.name}:`, error.message);
+        }
+      }
+    }
+
+    // Stop Presidio containers if they were started
+    if (process.env.REDACTION === 'true') {
+      const containers = ['presidio-analyzer', 'presidio-anonymizer'];
+      for (const containerName of containers) {
+        try {
+          const stopProcess = spawn('docker', ['stop', containerName], { stdio: 'ignore' });
+          await new Promise((resolve) => {
+            stopProcess.on('close', resolve);
+            setTimeout(resolve, 2000); // Timeout after 2 seconds
+          });
+        } catch (error) {
+          // Ignore errors on shutdown
         }
       }
     }
@@ -166,7 +253,7 @@ export class ServiceBootstrap {
     // Force kill any remaining processes
     for (const service of this.services) {
       if (service.status === 'running') {
-        
+
         try {
           service.process.kill('SIGKILL');
         } catch (error) {
@@ -175,7 +262,7 @@ export class ServiceBootstrap {
       }
     }
 
-    
+
   }
 }
 
